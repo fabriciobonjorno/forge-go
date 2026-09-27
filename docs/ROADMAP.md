@@ -145,13 +145,16 @@ Implemented foundation:
 - strict bearer middleware and deny-by-default `resource:action` permissions;
 - fail-closed typed tenant context;
 - PostgreSQL `InTenantTx` with a transaction-local RLS setting and a real
-  cross-tenant integration test.
+  cross-tenant integration test;
+- versioned PBKDF2-HMAC-SHA256 password hashing using Go's standard library;
+- PostgreSQL user/organization/tenant/membership/role/permission/session schema;
+- a concrete PostgreSQL session repository that implements `auth.Resolver`,
+  recomputes current permissions, and supports per-session and user-wide
+  revocation.
 
-Still planned: a concrete identity/session repository, user/organization/
-membership/role schema, password hashing and login, revocation endpoints,
-cookie sessions and CSRF, account recovery, MFA, audit events, generated
-application wiring, and a decided database-enforcement strategy for MySQL,
-MariaDB and SQLite. See [AUTHENTICATION.md](AUTHENTICATION.md) and
+Still planned: login endpoints and identifier policy, cookie sessions and
+CSRF, account recovery, MFA, audit events, generated application wiring, and a
+decided database-enforcement strategy for MySQL, MariaDB and SQLite. See [AUTHENTICATION.md](AUTHENTICATION.md) and
 [MULTI_TENANCY.md](MULTI_TENANCY.md).
 
 ## Phase 4 - Asynchronous work
