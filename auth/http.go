@@ -2,7 +2,9 @@ package auth
 
 import (
 	"errors"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/fabriciobonjorno/forge-go/web"
@@ -35,13 +37,19 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 			Email:      request.Email,
 			Password:   request.Password,
 			TenantSlug: request.TenantSlug,
+			Source:     requestSource(r),
 		})
 		if err != nil {
-			if errors.Is(err, ErrCredentialsInvalid) {
+			var throttled *LoginThrottledError
+			switch {
+			case errors.As(err, &throttled):
+				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
+				web.Error(w, r, err)
+			case errors.Is(err, ErrCredentialsInvalid):
 				unauthorized(w, r, ErrCredentialsInvalid)
-				return
+			default:
+				web.Error(w, r, err)
 			}
-			web.Error(w, r, err)
 			return
 		}
 		web.JSON(w, http.StatusOK, loginResponse{
@@ -76,4 +84,23 @@ func NewLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}), nil
+}
+
+func requestSource(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func retryAfterHeader(duration time.Duration) string {
+	seconds := int64(duration / time.Second)
+	if duration%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	return strconv.FormatInt(seconds, 10)
 }
