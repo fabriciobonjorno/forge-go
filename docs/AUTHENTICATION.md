@@ -137,8 +137,43 @@ trusted-proxy policy exists.
 
 See [ADR 0011](adr/0011-login-throttling.md).
 
+## Browser cookie sessions and CSRF
+
+Browser applications can use `auth.NewCookieLoginHandler`,
+`Middleware.AuthenticateCookie`, `auth.RequireCSRF`, and
+`auth.NewCookieLogoutHandler`. Cookie authentication is an explicit transport
+and never falls back to bearer authentication.
+
+A successful cookie login sets two host-only cookies:
+
+- `__Host-forge_session`: the opaque session token with `Secure`,
+  `HttpOnly`, `Path=/`, and `SameSite=Lax`;
+- `__Host-forge_csrf`: a separate random 256-bit token with `Secure`,
+  `Path=/`, and `SameSite=Lax`.
+
+The cookie login response never contains the session token. It returns the CSRF
+token and session expiry, and is marked `Cache-Control: no-store` and
+`Pragma: no-cache`. The bearer login response now uses the same no-cache
+headers because it contains the plaintext session credential.
+
+Cookie login requires an HTTPS `Origin` header whose host exactly matches the
+request host. This protects the login endpoint itself from login CSRF before a
+CSRF cookie exists. Cookie mode therefore intentionally requires HTTPS;
+non-browser/API clients can continue using the bearer login endpoint.
+
+For unsafe methods, `RequireCSRF` requires exactly one
+`X-CSRF-Token` header whose canonical base64url value matches the CSRF cookie
+in constant time. Safe methods (`GET`, `HEAD`, `OPTIONS`, `TRACE`) pass
+through and must remain side-effect free.
+
+Cookie logout requires CSRF, revokes a valid session credential when present,
+clears both cookies, and remains idempotent for unknown or already-revoked
+sessions.
+
+See [ADR 0012](adr/0012-cookie-sessions-and-csrf.md).
+
 ## Remaining Phase 3 work
 
-Cookie sessions and CSRF, account recovery, MFA, audit events, generated
-application wiring, and equivalent database-enforcement strategies for MySQL,
-MariaDB and SQLite are still planned.
+Account recovery, MFA, audit events, generated application wiring, and
+equivalent database-enforcement strategies for MySQL, MariaDB and SQLite are
+still planned.
