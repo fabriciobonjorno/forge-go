@@ -98,12 +98,13 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			return
 		}
 		setSessionCookies(w, result.Token.Reveal(), csrfToken, result.ExpiresAt)
+		noStore(w)
 		web.JSON(w, http.StatusOK, cookieLoginResponse{CSRFToken: csrfToken, ExpiresAt: result.ExpiresAt})
 	}), nil
 }
 
-// RequireCSRF protects unsafe cookie-authenticated routes using a synchronizer
-// double-submit token: the __Host- CSRF cookie and X-CSRF-Token header must
+// RequireCSRF protects unsafe cookie-authenticated routes using a double-submit
+// token: the __Host- CSRF cookie and X-CSRF-Token header must
 // contain the same canonical 256-bit value. Safe methods pass through.
 func RequireCSRF(next http.Handler) (http.Handler, error) {
 	if next == nil {
