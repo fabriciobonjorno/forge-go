@@ -154,16 +154,20 @@ func WithRecoveryThrottler(throttler LoginThrottler) RecoveryOption {
 	}
 }
 
-func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...RecoveryOption) (*RecoveryService, error) {
-	if store == nil || sender == nil {
-		return nil, errors.New("recovery store and sender are required")
-	}
-	throttler, err := NewMemoryLoginThrottler(LoginThrottleConfig{
+func DefaultRecoveryThrottleConfig() LoginThrottleConfig {
+	return LoginThrottleConfig{
 		Window:       time.Hour,
 		AccountLimit: 3,
 		SourceLimit:  30,
 		MaxEntries:   20_000,
-	})
+	}
+}
+
+func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...RecoveryOption) (*RecoveryService, error) {
+	if store == nil || sender == nil {
+		return nil, errors.New("recovery store and sender are required")
+	}
+	throttler, err := NewMemoryLoginThrottler(DefaultRecoveryThrottleConfig())
 	if err != nil {
 		return nil, err
 	}
