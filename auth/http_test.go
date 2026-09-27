@@ -109,3 +109,48 @@ func TestLogoutHandlerIsStrictAndIdempotent(t *testing.T) {
 		t.Fatalf("bad status=%d body=%s", badRecorder.Code, badRecorder.Body.String())
 	}
 }
+
+func TestLoginHandlerReturnsRetryAfterWhenThrottled(t *testing.T) {
+	limiter, err := newMemoryLoginThrottler(LoginThrottleConfig{
+		Window:       time.Minute,
+		AccountLimit: 1,
+		SourceLimit:  10,
+		MaxEntries:   100,
+	}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLoginService(&loginStoreStub{}, &sessionStub{}, WithLoginThrottler(limiter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewLoginHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"email":"nobody@example.com","password":"wrong","tenant":"acme"}`)
+	first := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	first.Header.Set("Content-Type", "application/json")
+	firstRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(firstRecorder, first)
+	if firstRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("first status=%d body=%s", firstRecorder.Code, firstRecorder.Body.String())
+	}
+
+	second := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	second.Header.Set("Content-Type", "application/json")
+	secondRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(secondRecorder, second)
+	if secondRecorder.Code != http.StatusTooManyRequests || secondRecorder.Header().Get("Retry-After") == "" {
+		t.Fatalf("second status=%d retry-after=%q body=%s", secondRecorder.Code, secondRecorder.Header().Get("Retry-After"), secondRecorder.Body.String())
+	}
+}
+
+func TestRequestSourceUsesPeerAddressNotForwardedHeaders(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	request.RemoteAddr = "203.0.113.7:4321"
+	request.Header.Set("X-Forwarded-For", "198.51.100.9")
+	if got := requestSource(request); got != "203.0.113.7" {
+		t.Fatalf("source=%q", got)
+	}
+}

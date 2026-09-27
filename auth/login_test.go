@@ -55,7 +55,7 @@ func TestLoginNormalizesIdentifierAndCreatesSession(t *testing.T) {
 	subjectID, membershipID := uuid.MustNew(), uuid.MustNew()
 	store := &loginStoreStub{
 		identity: PasswordIdentity{SubjectID: subjectID, MembershipID: membershipID, PasswordHash: passwordHash},
-		found: true,
+		found:    true,
 	}
 	sessions := &sessionStub{token: token}
 	now := time.Date(2026, 9, 27, 13, 0, 0, 0, time.UTC)
@@ -65,8 +65,8 @@ func TestLoginNormalizesIdentifierAndCreatesSession(t *testing.T) {
 	}
 
 	result, err := service.Login(context.Background(), LoginInput{
-		Email: "  Alice@Example.COM ",
-		Password: "correct horse battery staple",
+		Email:      "  Alice@Example.COM ",
+		Password:   "correct horse battery staple",
 		TenantSlug: " ACME ",
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestLoginRehashRaceDoesNotIssueSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &loginStoreStub{
-		found: true,
+		found:    true,
 		identity: PasswordIdentity{SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: oldHash},
 		replaced: false,
 	}

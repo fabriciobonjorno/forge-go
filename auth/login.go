@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/fabriciobonjorno/forge-go/uuid"
 )
@@ -54,6 +55,7 @@ type LoginInput struct {
 	Email      string
 	Password   string
 	TenantSlug string
+	Source     string
 }
 
 type LoginResult struct {
@@ -64,6 +66,7 @@ type LoginResult struct {
 type LoginService struct {
 	passwords PasswordStore
 	sessions  SessionCreator
+	throttler LoginThrottler
 	now       func() time.Time
 	ttl       time.Duration
 }
@@ -90,11 +93,31 @@ func WithLoginClock(now func() time.Time) LoginOption {
 	}
 }
 
+func WithLoginThrottler(throttler LoginThrottler) LoginOption {
+	return func(service *LoginService) error {
+		if throttler == nil {
+			return errors.New("login throttler is required")
+		}
+		service.throttler = throttler
+		return nil
+	}
+}
+
 func NewLoginService(passwords PasswordStore, sessions SessionCreator, options ...LoginOption) (*LoginService, error) {
 	if passwords == nil || sessions == nil {
 		return nil, errors.New("password store and session creator are required")
 	}
-	service := &LoginService{passwords: passwords, sessions: sessions, now: time.Now, ttl: defaultSessionTTL}
+	throttler, err := NewMemoryLoginThrottler(DefaultLoginThrottleConfig())
+	if err != nil {
+		return nil, err
+	}
+	service := &LoginService{
+		passwords: passwords,
+		sessions:  sessions,
+		throttler: throttler,
+		now:       time.Now,
+		ttl:       defaultSessionTTL,
+	}
 	for _, option := range options {
 		if option == nil {
 			return nil, errors.New("nil login option")
@@ -113,6 +136,15 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 	email, tenant, ok := normalizeLogin(input.Email, input.TenantSlug)
 	if !ok || input.Password == "" || len(input.Password) > maxPasswordBytes {
 		return LoginResult{}, ErrCredentialsInvalid
+	}
+
+	throttleKey := deriveLoginThrottleKey(email, tenant, strings.TrimSpace(input.Source))
+	decision, err := s.throttler.Attempt(ctx, throttleKey)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if !decision.Allowed {
+		return LoginResult{}, &LoginThrottledError{RetryAfter: decision.RetryAfter}
 	}
 
 	identity, found, err := s.passwords.LookupPassword(ctx, email, tenant)
@@ -154,6 +186,9 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		}
 	}
 
+	if err := s.throttler.Success(ctx, throttleKey); err != nil {
+		return LoginResult{}, err
+	}
 	expiresAt := s.now().UTC().Add(s.ttl)
 	token, err := s.sessions.CreateSession(ctx, identity.MembershipID, expiresAt)
 	if err != nil {

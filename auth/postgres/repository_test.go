@@ -118,7 +118,6 @@ func insertIdentityFixture(
 	}
 }
 
-
 func TestLoginServiceAgainstPostgresRepository(t *testing.T) {
 	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
 	repo, err := authpostgres.New(db)

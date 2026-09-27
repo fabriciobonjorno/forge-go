@@ -22,4 +22,7 @@ func TestIsMatchesByCodeAcrossCopies(t *testing.T) {
 	if got := fault.From(wrapped).Status(); got != http.StatusNotFound {
 		t.Fatalf("status=%d", got)
 	}
+	if got := fault.New("rate_limited", "slow down", fault.CategoryRateLimited, 0).Status(); got != http.StatusTooManyRequests {
+		t.Fatalf("rate limited status=%d", got)
+	}
 }
