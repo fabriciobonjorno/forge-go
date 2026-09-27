@@ -89,6 +89,9 @@ type PasswordRecoveryMessage struct {
 	ExpiresAt  time.Time
 }
 
+// RecoverySender delivers a reset message. Implementations should enqueue
+// delivery and return promptly rather than perform slow SMTP/network delivery
+// inline, so public request timing does not reveal whether an identity exists.
 type RecoverySender interface {
 	SendPasswordRecovery(ctx context.Context, message PasswordRecoveryMessage) error
 }
@@ -108,6 +111,7 @@ type RecoveryRequest struct {
 type PasswordReset struct {
 	Token       string
 	NewPassword string
+	Source      string
 }
 
 type RecoveryService struct {
@@ -238,6 +242,14 @@ func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error 
 	if err != nil {
 		return ErrRecoveryInvalid
 	}
+	key := deriveRecoveryResetThrottleKey(token.Digest(), strings.TrimSpace(reset.Source))
+	decision, err := s.throttler.Attempt(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		return &RecoveryThrottledError{RetryAfter: decision.RetryAfter}
+	}
 	nextHash, err := HashPassword(reset.NewPassword)
 	if err != nil {
 		if errors.Is(err, ErrPasswordRequired) || errors.Is(err, ErrPasswordTooLong) {
@@ -279,6 +291,17 @@ func deriveRecoveryThrottleKey(email, tenant, source string) LoginThrottleKey {
 	}
 	if source != "" {
 		key.Source = sha256.Sum256([]byte("recovery-source\x00" + source))
+		key.HasSource = true
+	}
+	return key
+}
+
+func deriveRecoveryResetThrottleKey(digest Digest, source string) LoginThrottleKey {
+	key := LoginThrottleKey{
+		Account: sha256.Sum256(append([]byte("recovery-reset\x00"), digest[:]...)),
+	}
+	if source != "" {
+		key.Source = sha256.Sum256([]byte("recovery-reset-source\x00" + source))
 		key.HasSource = true
 	}
 	return key
