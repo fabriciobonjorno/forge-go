@@ -153,11 +153,14 @@ Implemented foundation:
   revocation;
 - tenant-scoped email/password login with uniform authentication failures,
   dummy-hash timing equalization, password-work-factor upgrades, and thin
-  login/logout HTTP adapters.
+  login/logout HTTP adapters;
+- account/source login throttling with a bounded in-memory default, HTTP 429
+  plus Retry-After, and a shared PostgreSQL adapter with bounded pruning
+  ([ADR 0011](adr/0011-login-throttling.md)).
 
-Still planned: native login/brute-force throttling, cookie sessions and CSRF,
-account recovery, MFA, audit events, generated application wiring, and a
-decided database-enforcement strategy for MySQL, MariaDB and SQLite. See [AUTHENTICATION.md](AUTHENTICATION.md) and
+Still planned: cookie sessions and CSRF, account recovery, MFA, audit events,
+generated application wiring, and a decided database-enforcement strategy for
+MySQL, MariaDB and SQLite. See [AUTHENTICATION.md](AUTHENTICATION.md) and
 [MULTI_TENANCY.md](MULTI_TENANCY.md).
 
 ## Phase 4 - Asynchronous work
