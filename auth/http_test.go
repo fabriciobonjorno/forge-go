@@ -55,6 +55,9 @@ func TestLoginHandlerReturnsBearerToken(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+	if recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("cache headers: Cache-Control=%q Pragma=%q", recorder.Header().Get("Cache-Control"), recorder.Header().Get("Pragma"))
+	}
 	var response loginResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
