@@ -226,3 +226,34 @@ func TestRecoveryTokenIsCanonicalAndRedacted(t *testing.T) {
 		t.Fatalf("non-canonical error=%v", err)
 	}
 }
+
+func TestRecoveryResetThrottlesBeforePasswordWork(t *testing.T) {
+	limiter, err := newMemoryLoginThrottler(LoginThrottleConfig{
+		Window:       time.Minute,
+		AccountLimit: 1,
+		SourceLimit:  1,
+		MaxEntries:   100,
+	}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &recoveryStoreStub{}
+	service, err := NewRecoveryService(store, &recoverySenderStub{}, WithRecoveryThrottler(limiter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset := PasswordReset{Token: token.Reveal(), NewPassword: "replacement password", Source: "192.0.2.10"}
+	if err := service.Reset(context.Background(), reset); !errors.Is(err, ErrRecoveryInvalid) {
+		t.Fatalf("first error=%v", err)
+	}
+	store.consumeErr = errors.New("consume must not run after throttle")
+	err = service.Reset(context.Background(), reset)
+	var throttled *RecoveryThrottledError
+	if !errors.As(err, &throttled) || !errors.Is(err, ErrRecoveryThrottled) || throttled.RetryAfter <= 0 {
+		t.Fatalf("second error=%v", err)
+	}
+}
