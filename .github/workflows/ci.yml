@@ -44,7 +44,7 @@ jobs:
       # Database tests fail instead of skipping when a server is missing.
       FORGE_TEST_REQUIRE_DATABASE: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -87,7 +87,7 @@ jobs:
       FORGE_TEST_MYSQL_URL: mysql://root:forge@127.0.0.1:3306/mysql
       FORGE_TEST_REQUIRE_DATABASE: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -101,7 +101,7 @@ jobs:
       matrix:
         database: [postgresql, mysql, mariadb, sqlite]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
