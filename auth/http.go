@@ -1,0 +1,79 @@
+package auth
+
+import (
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/fabriciobonjorno/forge-go/web"
+)
+
+type loginRequest struct {
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	TenantSlug string `json:"tenant"`
+}
+
+type loginResponse struct {
+	AccessToken string    `json:"access_token"`
+	TokenType   string    `json:"token_type"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// NewLoginHandler returns a thin HTTP adapter over LoginService.
+func NewLoginHandler(service *LoginService) (http.Handler, error) {
+	if service == nil {
+		return nil, errors.New("login service is required")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request loginRequest
+		if err := web.DecodeJSON(r, &request); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		result, err := service.Login(r.Context(), LoginInput{
+			Email:      request.Email,
+			Password:   request.Password,
+			TenantSlug: request.TenantSlug,
+		})
+		if err != nil {
+			if errors.Is(err, ErrCredentialsInvalid) {
+				unauthorized(w, r, ErrCredentialsInvalid)
+				return
+			}
+			web.Error(w, r, err)
+			return
+		}
+		web.JSON(w, http.StatusOK, loginResponse{
+			AccessToken: result.Token.Reveal(),
+			TokenType:   "Bearer",
+			ExpiresAt:   result.ExpiresAt,
+		})
+	}), nil
+}
+
+// NewLogoutHandler returns an idempotent logout endpoint. A syntactically
+// valid but unknown/already-revoked token still returns 204 and does not become
+// a credential oracle.
+func NewLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
+	if revoker == nil {
+		return nil, errors.New("session revoker is required")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secret, err := bearer(r.Header.Values("Authorization"))
+		if err != nil {
+			unauthorized(w, r, err)
+			return
+		}
+		token, err := ParseToken(secret)
+		if err != nil {
+			unauthorized(w, r, ErrCredentialsInvalid)
+			return
+		}
+		if err := revoker.RevokeSession(r.Context(), token); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}), nil
+}
