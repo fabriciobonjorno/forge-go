@@ -18,6 +18,10 @@ type LoginThrottler struct {
 
 var _ auth.LoginThrottler = (*LoginThrottler)(nil)
 
+func NewRecoveryThrottler(db *postgres.DB) (*LoginThrottler, error) {
+	return NewLoginThrottler(db, auth.DefaultRecoveryThrottleConfig())
+}
+
 func NewLoginThrottler(db *postgres.DB, config auth.LoginThrottleConfig) (*LoginThrottler, error) {
 	if db == nil {
 		return nil, errors.New("login throttle database is required")
