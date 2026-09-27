@@ -12,7 +12,10 @@ import (
 	"github.com/fabriciobonjorno/forge-go/uuid"
 )
 
-var ErrRecoveryIdentityRequired = errors.New("active recovery identity is required")
+var (
+	ErrRecoveryIdentityRequired = errors.New("active recovery identity is required")
+	_                           auth.RecoveryStore = (*Repository)(nil)
+)
 
 func (r *Repository) LookupRecovery(ctx context.Context, emailNormalized, tenantSlug string) (auth.RecoveryIdentity, bool, error) {
 	var identity auth.RecoveryIdentity
