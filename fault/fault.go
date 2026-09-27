@@ -16,6 +16,7 @@ const (
 	CategoryNotFound     Category = "not_found"
 	CategoryConflict     Category = "conflict"
 	CategoryUnavailable  Category = "unavailable"
+	CategoryRateLimited  Category = "rate_limited"
 	CategoryInternal     Category = "internal"
 )
 
@@ -74,6 +75,8 @@ func (e *Error) Status() int {
 		return http.StatusConflict
 	case CategoryUnavailable:
 		return http.StatusServiceUnavailable
+	case CategoryRateLimited:
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}
