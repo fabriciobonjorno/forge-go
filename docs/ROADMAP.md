@@ -150,10 +150,13 @@ Implemented foundation:
 - PostgreSQL user/organization/tenant/membership/role/permission/session schema;
 - a concrete PostgreSQL session repository that implements `auth.Resolver`,
   recomputes current permissions, and supports per-session and user-wide
-  revocation.
+  revocation;
+- tenant-scoped email/password login with uniform authentication failures,
+  dummy-hash timing equalization, password-work-factor upgrades, and thin
+  login/logout HTTP adapters.
 
-Still planned: login endpoints and identifier policy, cookie sessions and
-CSRF, account recovery, MFA, audit events, generated application wiring, and a
+Still planned: native login/brute-force throttling, cookie sessions and CSRF,
+account recovery, MFA, audit events, generated application wiring, and a
 decided database-enforcement strategy for MySQL, MariaDB and SQLite. See [AUTHENTICATION.md](AUTHENTICATION.md) and
 [MULTI_TENANCY.md](MULTI_TENANCY.md).
 

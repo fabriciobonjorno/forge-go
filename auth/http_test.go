@@ -1,0 +1,111 @@
+package auth
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+type revokeStub struct {
+	token Token
+	err   error
+}
+
+func (s *revokeStub) RevokeSession(_ context.Context, token Token) error {
+	s.token = token
+	return s.err
+}
+
+func TestLoginHandlerReturnsBearerToken(t *testing.T) {
+	hash, err := HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &loginStoreStub{
+		found: true,
+		identity: PasswordIdentity{
+			SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash,
+		},
+	}
+	sessions := &sessionStub{token: token}
+	now := time.Date(2026, 9, 27, 13, 0, 0, 0, time.UTC)
+	service, err := NewLoginService(store, sessions, WithLoginClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewLoginHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"email":"alice@example.com","password":"secret","tenant":"acme"}`)
+	request := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response loginResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.AccessToken != token.Reveal() || response.TokenType != "Bearer" || !response.ExpiresAt.Equal(now.Add(defaultSessionTTL)) {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestLoginHandlerHidesAuthenticationMiss(t *testing.T) {
+	service, err := NewLoginService(&loginStoreStub{}, &sessionStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewLoginHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"email":"nobody@example.com","password":"wrong","tenant":"acme"}`)
+	request := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("WWW-Authenticate") == "" {
+		t.Fatalf("status=%d authenticate=%q body=%s", recorder.Code, recorder.Header().Get("WWW-Authenticate"), recorder.Body.String())
+	}
+}
+
+func TestLogoutHandlerIsStrictAndIdempotent(t *testing.T) {
+	token, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoker := &revokeStub{}
+	handler, err := NewLogoutHandler(revoker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	request.Header.Set("Authorization", "Bearer "+token.Reveal())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || revoker.token.Digest() != token.Digest() {
+		t.Fatalf("status=%d revoked=%v", recorder.Code, revoker.token)
+	}
+
+	bad := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	bad.Header.Set("Authorization", "Bearer malformed")
+	badRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(badRecorder, bad)
+	if badRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("bad status=%d body=%s", badRecorder.Code, badRecorder.Body.String())
+	}
+}

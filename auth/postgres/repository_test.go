@@ -117,3 +117,62 @@ func insertIdentityFixture(
 		t.Fatal(err)
 	}
 }
+
+
+func TestLoginServiceAgainstPostgresRepository(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	passwordHash, err := auth.HashPassword("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES ($1, $2, $3, $4)", userID, "Alice@example.com", "alice@example.com", passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_organizations (id, name) VALUES ($1, $2)", orgID, "Acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_tenants (id, organization_id, slug) VALUES ($1, $2, $3)", tenantID, orgID, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_memberships (id, user_id, tenant_id) VALUES ($1, $2, $3)", membershipID, userID, tenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	login, err := auth.NewLoginService(repo, repo, auth.WithLoginClock(func() time.Time { return now }), auth.WithSessionTTL(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := login.Login(ctx, auth.LoginInput{
+		Email:      " ALICE@EXAMPLE.COM ",
+		Password:   "correct horse battery staple",
+		TenantSlug: "ACME",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("expires_at=%v", result.ExpiresAt)
+	}
+	session, found, err := repo.ResolveSession(ctx, result.Token.Digest())
+	if err != nil || !found {
+		t.Fatalf("ResolveSession() found=%v err=%v", found, err)
+	}
+	if session.Principal.SubjectID() != userID || session.Principal.Tenant().ID != tenantID {
+		t.Fatalf("principal subject=%s tenant=%s", session.Principal.SubjectID(), session.Principal.Tenant().ID)
+	}
+
+	if _, err := login.Login(ctx, auth.LoginInput{
+		Email:      "alice@example.com",
+		Password:   "correct horse battery staple",
+		TenantSlug: "other",
+	}); !errors.Is(err, auth.ErrCredentialsInvalid) {
+		t.Fatalf("wrong tenant error=%v", err)
+	}
+}
