@@ -49,3 +49,44 @@ func TestLoadMigrationsRejectsMistakes(t *testing.T) {
 		}
 	}
 }
+
+
+func TestLoadMigrationSetsMergesAndSorts(t *testing.T) {
+	t.Parallel()
+	framework := fstest.MapFS{
+		"20260102000000_framework.up.sql":   {Data: []byte("CREATE TABLE framework_state (id int);")},
+		"20260102000000_framework.down.sql": {Data: []byte("DROP TABLE framework_state;")},
+	}
+	application := fstest.MapFS{
+		"20260103000000_app.up.sql":   {Data: []byte("CREATE TABLE app_state (id int);")},
+		"20260103000000_app.down.sql": {Data: []byte("DROP TABLE app_state;")},
+		"20260101000000_base.up.sql":   {Data: []byte("CREATE TABLE base_state (id int);")},
+	}
+	loaded, err := migrate.LoadMigrationSets(framework, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 3 || loaded[0].Name != "base" || loaded[1].Name != "framework" || loaded[2].Name != "app" {
+		t.Fatalf("unexpected merged migrations: %+v", loaded)
+	}
+}
+
+func TestLoadMigrationSetsRejectsGlobalVersionCollision(t *testing.T) {
+	t.Parallel()
+	first := fstest.MapFS{
+		"20260101000000_framework.up.sql": {Data: []byte("SELECT 1;")},
+	}
+	second := fstest.MapFS{
+		"20260101000000_application.up.sql": {Data: []byte("SELECT 2;")},
+	}
+	if _, err := migrate.LoadMigrationSets(first, second); err == nil {
+		t.Fatal("expected a cross-set version collision")
+	}
+}
+
+func TestLoadMigrationSetsRejectsNilSet(t *testing.T) {
+	t.Parallel()
+	if _, err := migrate.LoadMigrationSets(fstest.MapFS{}, nil); err == nil {
+		t.Fatal("expected nil migration set to fail")
+	}
+}
