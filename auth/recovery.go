@@ -19,6 +19,7 @@ const (
 	defaultRecoveryTTL = 30 * time.Minute
 	minRecoveryTTL     = 5 * time.Minute
 	maxRecoveryTTL     = 24 * time.Hour
+	recoveryCleanupTTL = 5 * time.Second
 )
 
 var (
@@ -224,7 +225,9 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 		ExpiresAt:  expiresAt,
 	}
 	if err := s.sender.SendPasswordRecovery(ctx, message); err != nil {
-		invalidateErr := s.store.InvalidateRecovery(context.WithoutCancel(ctx), token.Digest())
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recoveryCleanupTTL)
+		defer cancel()
+		invalidateErr := s.store.InvalidateRecovery(cleanupCtx, token.Digest())
 		return errors.Join(err, invalidateErr)
 	}
 	return nil
