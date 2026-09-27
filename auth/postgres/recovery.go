@@ -76,15 +76,41 @@ func (r *Repository) CreateRecovery(ctx context.Context, subjectID uuid.UUID, di
 }
 
 func (r *Repository) InvalidateRecovery(ctx context.Context, digest auth.Digest) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE forge_password_recovery
-		SET consumed_at = COALESCE(consumed_at, now())
-		WHERE token_digest = $1 AND consumed_at IS NULL
-	`, digest[:])
-	if err != nil {
+	return r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var subjectID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT user_id
+			FROM forge_password_recovery
+			WHERE token_digest = $1
+		`, digest[:]).Scan(&subjectID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return postgres.Translate(err)
+		}
+
+		var locked uuid.UUID
+		err = tx.QueryRow(ctx, `
+			SELECT id
+			FROM forge_users
+			WHERE id = $1
+			FOR UPDATE
+		`, subjectID).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return postgres.Translate(err)
+		}
+
+		_, err = tx.Exec(ctx, `
+			UPDATE forge_password_recovery
+			SET consumed_at = COALESCE(consumed_at, now())
+			WHERE token_digest = $1 AND consumed_at IS NULL
+		`, digest[:])
 		return postgres.Translate(err)
-	}
-	return nil
+	})
 }
 
 func (r *Repository) ConsumeRecovery(ctx context.Context, digest auth.Digest, nextPasswordHash string) (bool, error) {
