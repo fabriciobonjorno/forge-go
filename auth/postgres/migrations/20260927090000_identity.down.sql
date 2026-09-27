@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS forge_sessions;
+DROP TABLE IF EXISTS forge_membership_roles;
+DROP TABLE IF EXISTS forge_role_permissions;
+DROP TABLE IF EXISTS forge_permissions;
+DROP TABLE IF EXISTS forge_roles;
+DROP TABLE IF EXISTS forge_memberships;
+DROP TABLE IF EXISTS forge_tenants;
+DROP TABLE IF EXISTS forge_organizations;
+DROP TABLE IF EXISTS forge_users;
