@@ -42,6 +42,7 @@ func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, 
 	if err != nil {
 		return auth.Token{}, fmt.Errorf("generate session token: %w", err)
 	}
+	digest := token.Digest()
 	tag, err := r.db.Exec(ctx, `
 		INSERT INTO forge_sessions (token_digest, membership_id, credential_version, expires_at)
 		SELECT $1, m.id, u.session_version, $3
@@ -54,7 +55,7 @@ func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, 
 		  AND u.status = 'active'
 		  AND t.status = 'active'
 		  AND o.status = 'active'
-	`, token.Digest()[:], membershipID, expiresAt.UTC())
+	`, digest[:], membershipID, expiresAt.UTC())
 	if err != nil {
 		return auth.Token{}, postgres.Translate(err)
 	}
@@ -65,11 +66,12 @@ func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, 
 }
 
 func (r *Repository) RevokeSession(ctx context.Context, token auth.Token) error {
+	digest := token.Digest()
 	_, err := r.db.Exec(ctx, `
 		UPDATE forge_sessions
 		SET revoked_at = COALESCE(revoked_at, now())
 		WHERE token_digest = $1
-	`, token.Digest()[:])
+	`, digest[:])
 	if err != nil {
 		return postgres.Translate(err)
 	}
