@@ -204,3 +204,29 @@ func (r *Repository) ConsumeRecovery(ctx context.Context, digest auth.Digest, ne
 	})
 	return consumed, err
 }
+
+// PruneRecovery deletes at most limit consumed or expired recovery rows.
+// SKIP LOCKED allows multiple cleanup workers to run without blocking.
+func (r *Repository) PruneRecovery(ctx context.Context, limit int) (int64, error) {
+	if limit < 1 {
+		return 0, errors.New("prune limit must be positive")
+	}
+	tag, err := r.db.Exec(ctx, `
+		WITH doomed AS (
+			SELECT id
+			FROM forge_password_recovery
+			WHERE consumed_at IS NOT NULL
+			   OR expires_at <= clock_timestamp()
+			ORDER BY COALESCE(consumed_at, expires_at)
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		DELETE FROM forge_password_recovery target
+		USING doomed
+		WHERE target.id = doomed.id
+	`, limit)
+	if err != nil {
+		return 0, postgres.Translate(err)
+	}
+	return tag.RowsAffected(), nil
+}
