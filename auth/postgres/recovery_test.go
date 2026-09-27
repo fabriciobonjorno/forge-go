@@ -162,3 +162,46 @@ func TestPasswordRecoveryConcurrentTokensOnlyOneWins(t *testing.T) {
 		t.Fatalf("session_version=%d matchA=%v matchB=%v", sessionVersion, matchA, matchB)
 	}
 }
+
+func TestPasswordRecoveryPrunesExpiredAndConsumedRows(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	insertIdentityFixture(t, db, userID, orgID, tenantID, membershipID, "prune@example.com", "prune@example.com", "Prune", "prune")
+
+	for i, consumed := range []bool{false, true, false} {
+		token, err := auth.NewRecoveryToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		expires := "now() + interval '1 hour'"
+		if i == 0 {
+			expires = "now() - interval '1 hour'"
+		}
+		consumedSQL := "NULL"
+		if consumed {
+			consumedSQL = "now()"
+		}
+		query := "INSERT INTO forge_password_recovery (token_digest, user_id, expires_at, consumed_at) VALUES ($1, $2, " + expires + ", " + consumedSQL + ")"
+		digest := token.Digest()
+		if _, err := db.Exec(ctx, query, digest[:], userID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruned, err := repo.PruneRecovery(ctx, 10)
+	if err != nil || pruned != 2 {
+		t.Fatalf("pruned=%d err=%v", pruned, err)
+	}
+	var remaining int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM forge_password_recovery").Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining=%d", remaining)
+	}
+}
