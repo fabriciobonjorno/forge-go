@@ -52,6 +52,19 @@ func DefaultLoginThrottleConfig() LoginThrottleConfig {
 	}
 }
 
+func (config LoginThrottleConfig) Validate() error {
+	if config.Window <= 0 {
+		return errors.New("login throttle window must be positive")
+	}
+	if config.AccountLimit < 1 || config.SourceLimit < 1 {
+		return errors.New("login throttle limits must be positive")
+	}
+	if config.MaxEntries < 2 {
+		return errors.New("login throttle max entries must be at least 2")
+	}
+	return nil
+}
+
 type MemoryLoginThrottler struct {
 	mu      sync.Mutex
 	config  LoginThrottleConfig
@@ -82,14 +95,8 @@ func newMemoryLoginThrottler(config LoginThrottleConfig, now func() time.Time) (
 	if now == nil {
 		return nil, errors.New("login throttle clock is required")
 	}
-	if config.Window <= 0 {
-		return nil, errors.New("login throttle window must be positive")
-	}
-	if config.AccountLimit < 1 || config.SourceLimit < 1 {
-		return nil, errors.New("login throttle limits must be positive")
-	}
-	if config.MaxEntries < 2 {
-		return nil, errors.New("login throttle max entries must be at least 2")
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
 	return &MemoryLoginThrottler{
 		config:  config,
