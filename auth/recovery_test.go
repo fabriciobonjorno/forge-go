@@ -257,3 +257,13 @@ func TestRecoveryResetThrottlesBeforePasswordWork(t *testing.T) {
 		t.Fatalf("second error=%v", err)
 	}
 }
+
+func FuzzParseRecoveryTokenNeverPanics(f *testing.F) {
+	token, _ := newRecoveryTokenWithEntropy(zeroReader{})
+	for _, seed := range []string{"", "not-a-token", token.Reveal(), token.Reveal() + "="} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		_, _ = ParseRecoveryToken(value)
+	})
+}
