@@ -62,7 +62,12 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 		if err := service.Reset(r.Context(), PasswordReset{
 			Token:       request.Token,
 			NewPassword: request.NewPassword,
+			Source:      requestSource(r),
 		}); err != nil {
+			var throttled *RecoveryThrottledError
+			if errors.As(err, &throttled) {
+				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
+			}
 			web.Error(w, r, err)
 			return
 		}
