@@ -31,6 +31,50 @@ func New(db *postgres.DB) (*Repository, error) {
 	return &Repository{db: db, now: time.Now}, nil
 }
 
+func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenantSlug string) (auth.PasswordIdentity, bool, error) {
+	var identity auth.PasswordIdentity
+	err := r.db.QueryRow(ctx, `
+		SELECT u.id, m.id, u.password_hash
+		FROM forge_users u
+		JOIN forge_memberships m ON m.user_id = u.id
+		JOIN forge_tenants t ON t.id = m.tenant_id
+		JOIN forge_organizations o ON o.id = t.organization_id
+		WHERE u.email_normalized = $1
+		  AND t.slug = $2
+		  AND u.status = 'active'
+		  AND m.status = 'active'
+		  AND t.status = 'active'
+		  AND o.status = 'active'
+	`, emailNormalized, tenantSlug).Scan(&identity.SubjectID, &identity.MembershipID, &identity.PasswordHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return auth.PasswordIdentity{}, false, nil
+	}
+	if err != nil {
+		return auth.PasswordIdentity{}, false, postgres.Translate(err)
+	}
+	return identity, true, nil
+}
+
+func (r *Repository) ReplacePasswordHash(ctx context.Context, subjectID uuid.UUID, previousHash, nextHash string) (bool, error) {
+	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
+		return false, errors.New("user ID must be a UUIDv7")
+	}
+	if previousHash == "" || nextHash == "" || previousHash == nextHash {
+		return false, errors.New("password hash replacement requires distinct non-empty hashes")
+	}
+	tag, err := r.db.Exec(ctx, `
+		UPDATE forge_users
+		SET password_hash = $3, updated_at = now()
+		WHERE id = $1
+		  AND password_hash = $2
+		  AND status = 'active'
+	`, subjectID, previousHash, nextHash)
+	if err != nil {
+		return false, postgres.Translate(err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, expiresAt time.Time) (auth.Token, error) {
 	if membershipID.Version() != 7 || membershipID.Variant() != 2 {
 		return auth.Token{}, errors.New("membership ID must be a UUIDv7")
