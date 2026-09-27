@@ -1,0 +1,164 @@
+package postgres_test
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/fabriciobonjorno/forge-go/auth"
+	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
+	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+func TestPasswordRecoveryConsumesOnceAndRevokesSessions(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	insertIdentityFixture(t, db, userID, orgID, tenantID, membershipID, "alice@example.com", "alice@example.com", "Acme", "acme")
+
+	identity, found, err := repo.LookupRecovery(ctx, "alice@example.com", "acme")
+	if err != nil || !found || identity.SubjectID != userID {
+		t.Fatalf("identity=%+v found=%v err=%v", identity, found, err)
+	}
+
+	sessionToken, err := repo.CreateSession(ctx, membershipID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateRecovery(ctx, userID, first.Digest(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateRecovery(ctx, userID, second.Digest(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	newHash, err := auth.HashPassword("replacement password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed, err := repo.ConsumeRecovery(ctx, first.Digest(), newHash); err != nil || consumed {
+		t.Fatalf("superseded token consumed=%v err=%v", consumed, err)
+	}
+	consumed, err := repo.ConsumeRecovery(ctx, second.Digest(), newHash)
+	if err != nil || !consumed {
+		t.Fatalf("active token consumed=%v err=%v", consumed, err)
+	}
+	if consumed, err := repo.ConsumeRecovery(ctx, second.Digest(), newHash); err != nil || consumed {
+		t.Fatalf("reused token consumed=%v err=%v", consumed, err)
+	}
+	if _, found, err := repo.ResolveSession(ctx, sessionToken.Digest()); err != nil || found {
+		t.Fatalf("old session found=%v err=%v", found, err)
+	}
+
+	var storedHash string
+	var sessionVersion int64
+	if err := db.QueryRow(ctx, "SELECT password_hash, session_version FROM forge_users WHERE id = $1", userID).Scan(&storedHash, &sessionVersion); err != nil {
+		t.Fatal(err)
+	}
+	match, _, err := auth.VerifyPassword(storedHash, "replacement password")
+	if err != nil || !match || sessionVersion != 2 {
+		t.Fatalf("password match=%v version=%d err=%v", match, sessionVersion, err)
+	}
+}
+
+func TestPasswordRecoveryConcurrentTokensOnlyOneWins(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	insertIdentityFixture(t, db, userID, orgID, tenantID, membershipID, "race@example.com", "race@example.com", "Race", "race")
+
+	tokenA, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenB, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(time.Hour)
+	for _, digest := range []auth.Digest{tokenA.Digest(), tokenB.Digest()} {
+		if _, err := db.Exec(ctx, `
+			INSERT INTO forge_password_recovery (token_digest, user_id, expires_at)
+			VALUES ($1, $2, $3)
+		`, digest[:], userID, expires); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hashA, err := auth.HashPassword("password A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashB, err := auth.HashPassword("password B")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var winners atomic.Int32
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, attempt := range []struct {
+		digest auth.Digest
+		hash   string
+	}{
+		{tokenA.Digest(), hashA},
+		{tokenB.Digest(), hashB},
+	} {
+		attempt := attempt
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			consumed, err := repo.ConsumeRecovery(context.Background(), attempt.digest, attempt.hash)
+			if consumed {
+				winners.Add(1)
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if winners.Load() != 1 {
+		t.Fatalf("winners=%d want 1", winners.Load())
+	}
+
+	var sessionVersion int64
+	var storedHash string
+	if err := db.QueryRow(ctx, "SELECT password_hash, session_version FROM forge_users WHERE id = $1", userID).Scan(&storedHash, &sessionVersion); err != nil {
+		t.Fatal(err)
+	}
+	matchA, _, err := auth.VerifyPassword(storedHash, "password A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchB, _, err := auth.VerifyPassword(storedHash, "password B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionVersion != 2 || matchA == matchB {
+		t.Fatalf("session_version=%d matchA=%v matchB=%v", sessionVersion, matchA, matchB)
+	}
+}
