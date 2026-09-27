@@ -109,13 +109,36 @@ The login response returns `access_token`, `token_type: "Bearer"`, and
 a syntactically valid token that is unknown or already revoked still returns
 `204`.
 
-Applications should register these handlers only on POST routes and must apply
-their deployment's rate-limiting/brute-force controls. Framework-native login
-throttling is still pending.
+Applications should register these handlers only on POST routes.
+
+## Login throttling
+
+`LoginService` rate-limits every syntactically valid password attempt before
+credential lookup. It derives SHA-256 keys for the tenant+email account and,
+when available, the network source. The limiter therefore does not need to
+store plaintext email addresses or IP addresses.
+
+The default `MemoryLoginThrottler` is bounded to 20,000 buckets and uses a
+15-minute window with five attempts per account and 300 attempts per source.
+A successful login clears the account bucket but not the source bucket, so one
+successful account does not reset password-spraying pressure from that source.
+
+For horizontally scaled PostgreSQL deployments, use
+`auth/postgres.NewLoginThrottler` through `WithLoginThrottler`. It stores
+shared hashed counters in `forge_login_throttle` and updates account/source
+counters atomically in one transaction. `PruneExpired` deletes expired buckets
+in bounded batches using `SKIP LOCKED`, so multiple cleanup workers can run
+without blocking each other.
+
+A blocked login returns `login_throttled` with HTTP `429`; the HTTP adapter
+also sends `Retry-After`. Source detection uses the socket peer from
+`RemoteAddr` only. Forge does not trust `X-Forwarded-For` until an explicit
+trusted-proxy policy exists.
+
+See [ADR 0011](adr/0011-login-throttling.md).
 
 ## Remaining Phase 3 work
 
-Cookie sessions and CSRF, account recovery, MFA, audit events, native
-login/brute-force throttling, generated application wiring, and equivalent
-database-enforcement strategies for MySQL, MariaDB and SQLite are still
-planned.
+Cookie sessions and CSRF, account recovery, MFA, audit events, generated
+application wiring, and equivalent database-enforcement strategies for MySQL,
+MariaDB and SQLite are still planned.
