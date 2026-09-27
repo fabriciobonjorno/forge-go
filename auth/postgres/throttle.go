@@ -14,7 +14,6 @@ import (
 type LoginThrottler struct {
 	db     *postgres.DB
 	config auth.LoginThrottleConfig
-	now    func() time.Time
 }
 
 var _ auth.LoginThrottler = (*LoginThrottler)(nil)
@@ -26,12 +25,10 @@ func NewLoginThrottler(db *postgres.DB, config auth.LoginThrottleConfig) (*Login
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	return &LoginThrottler{db: db, config: config, now: time.Now}, nil
+	return &LoginThrottler{db: db, config: config}, nil
 }
 
 func (l *LoginThrottler) Attempt(ctx context.Context, key auth.LoginThrottleKey) (auth.LoginThrottleDecision, error) {
-	now := l.now().UTC()
-	resetAt := now.Add(l.config.Window)
 	candidates := []struct {
 		scope  int16
 		digest [32]byte
@@ -49,6 +46,13 @@ func (l *LoginThrottler) Attempt(ctx context.Context, key auth.LoginThrottleKey)
 
 	decision := auth.LoginThrottleDecision{Allowed: true}
 	err := l.db.InTx(ctx, func(tx pgx.Tx) error {
+		var now time.Time
+		if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
+			return postgres.Translate(err)
+		}
+		now = now.UTC()
+		resetAt := now.Add(l.config.Window)
+
 		var retryAfter time.Duration
 		for _, candidate := range candidates {
 			var count int
@@ -111,16 +115,16 @@ func (l *LoginThrottler) PruneExpired(ctx context.Context, limit int) (int64, er
 		WITH doomed AS (
 			SELECT scope, key_hash
 			FROM forge_login_throttle
-			WHERE reset_at <= $1
+			WHERE reset_at <= clock_timestamp()
 			ORDER BY reset_at
-			LIMIT $2
+			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
 		DELETE FROM forge_login_throttle target
 		USING doomed
 		WHERE target.scope = doomed.scope
 		  AND target.key_hash = doomed.key_hash
-	`, l.now().UTC(), limit)
+	`, limit)
 	if err != nil {
 		return 0, postgres.Translate(err)
 	}
