@@ -1,4 +1,5 @@
-// Package auth provides opaque bearer-session authentication and deny-by-
+// Package auth provides opaque session authentication over explicit bearer or
+// secure-cookie transports, CSRF protection for browser sessions, and deny-by-
 // default permission checks. Session resolvers must load current account,
 // tenant membership and permissions on every request; long-lived role claims
 // are deliberately not part of the token.
