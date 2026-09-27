@@ -26,6 +26,7 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 		return nil, errors.New("recovery service is required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recoveryNoStore(w)
 		var request recoveryRequestBody
 		if err := web.DecodeJSON(r, &request); err != nil {
 			web.Error(w, r, err)
@@ -44,7 +45,6 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 			web.Error(w, r, err)
 			return
 		}
-		recoveryNoStore(w)
 		web.JSON(w, http.StatusAccepted, recoveryAcceptedResponse{Status: "accepted"})
 	}), nil
 }
@@ -54,6 +54,7 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 		return nil, errors.New("recovery service is required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recoveryNoStore(w)
 		var request passwordResetBody
 		if err := web.DecodeJSON(r, &request); err != nil {
 			web.Error(w, r, err)
@@ -71,7 +72,6 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		recoveryNoStore(w)
 		w.WriteHeader(http.StatusNoContent)
 	}), nil
 }
