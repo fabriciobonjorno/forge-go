@@ -165,12 +165,12 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 func normalizeLogin(email, tenant string) (string, string, bool) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	tenant = strings.ToLower(strings.TrimSpace(tenant))
-	if len(email) == 0 || len(email) > 320 || strings.Count(email, "@") != 1 || strings.ContainsAny(email, " 	
-") {
+	hasUnsafeRune := func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
+	if len(email) == 0 || len(email) > 320 || strings.Count(email, "@") != 1 || strings.ContainsFunc(email, hasUnsafeRune) {
 		return "", "", false
 	}
 	local, domain, _ := strings.Cut(email, "@")
-	if local == "" || domain == "" || !strings.Contains(domain, ".") || !tenantSlugPattern.MatchString(tenant) {
+	if local == "" || domain == "" || !tenantSlugPattern.MatchString(tenant) {
 		return "", "", false
 	}
 	return email, tenant, true
