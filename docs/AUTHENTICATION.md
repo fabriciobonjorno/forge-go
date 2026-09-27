@@ -75,9 +75,47 @@ version and revokes existing sessions atomically.
 
 The plaintext bearer token is never stored.
 
+## Password login
+
+`auth.LoginService` is the application use case for password authentication.
+It depends only on `PasswordStore` and `SessionCreator` ports. The PostgreSQL
+repository implements both.
+
+A login always names its tenant explicitly:
+
+```json
+{
+  "email": "alice@example.com",
+  "password": "correct horse battery staple",
+  "tenant": "acme"
+}
+```
+
+Forge trims surrounding identifier whitespace, case-folds email and tenant
+identifiers, and validates the tenant slug. Password bytes are never trimmed or
+normalized. An unknown email, wrong password, unknown tenant, disabled user,
+disabled organization/tenant, or inactive membership all produce the same
+public `credentials_invalid` result. Missing identities still execute PBKDF2
+against a dummy hash to avoid a dramatically cheaper account-miss path.
+
+The default session lifetime is 24 hours and may be configured between five
+minutes and 30 days. A successful login can upgrade an old password work factor
+with a compare-and-swap update. If the password changed concurrently, Forge
+does not issue a session from the stale credential.
+
+`auth.NewLoginHandler` and `auth.NewLogoutHandler` are thin HTTP adapters.
+The login response returns `access_token`, `token_type: "Bearer"`, and
+`expires_at`. Logout accepts exactly one bearer credential and is idempotent;
+a syntactically valid token that is unknown or already revoked still returns
+`204`.
+
+Applications should register these handlers only on POST routes and must apply
+their deployment's rate-limiting/brute-force controls. Framework-native login
+throttling is still pending.
+
 ## Remaining Phase 3 work
 
-Login endpoints and login-identifier policy, cookie sessions and CSRF, account
-recovery, MFA, audit events, generated application wiring, and equivalent
+Cookie sessions and CSRF, account recovery, MFA, audit events, native
+login/brute-force throttling, generated application wiring, and equivalent
 database-enforcement strategies for MySQL, MariaDB and SQLite are still
 planned.
