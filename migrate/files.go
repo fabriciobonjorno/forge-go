@@ -126,6 +126,41 @@ func LoadMigrations(fsys fs.FS) ([]Migration, error) {
 	return migrations, nil
 }
 
+
+
+// LoadMigrationSets loads and merges several independent migration filesystems.
+// Every set is validated with LoadMigrations first. Versions must be globally
+// unique across all sets so framework and application migrations cannot
+// silently shadow or reorder each other.
+func LoadMigrationSets(sets ...fs.FS) ([]Migration, error) {
+	if len(sets) == 0 {
+		return nil, nil
+	}
+	merged := make([]Migration, 0)
+	seen := make(map[int64]Migration)
+	for index, set := range sets {
+		if set == nil {
+			return nil, fmt.Errorf("migration set %d is nil", index+1)
+		}
+		loaded, err := LoadMigrations(set)
+		if err != nil {
+			return nil, fmt.Errorf("migration set %d: %w", index+1, err)
+		}
+		for _, migration := range loaded {
+			if existing, ok := seen[migration.Version]; ok {
+				return nil, fmt.Errorf(
+					"migration version %d is used by both %q and %q across migration sets",
+					migration.Version, existing.Name, migration.Name,
+				)
+			}
+			seen[migration.Version] = migration
+			merged = append(merged, migration)
+		}
+	}
+	slices.SortFunc(merged, func(a, b Migration) int { return cmp.Compare(a.Version, b.Version) })
+	return merged, nil
+}
+
 // hasStatements reports whether sql contains anything besides whitespace and
 // "--" line comments.
 func hasStatements(sql string) bool {
