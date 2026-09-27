@@ -50,6 +50,9 @@ func TestCookieLoginSetsSecureHostCookies(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+	if recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("cache headers: Cache-Control=%q Pragma=%q", recorder.Header().Get("Cache-Control"), recorder.Header().Get("Pragma"))
+	}
 	if strings.Contains(recorder.Body.String(), token.Reveal()) {
 		t.Fatal("cookie login exposed the session token in the response body")
 	}
