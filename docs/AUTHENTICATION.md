@@ -1,8 +1,7 @@
 # Authentication and Authorization
 
-Phase 3 starts with a small API-oriented security core. It does not invent an
-identity database or silently choose business rules for accounts, roles, and
-memberships.
+Phase 3 now includes an API-oriented security core plus an opinionated
+PostgreSQL identity/session adapter. The core remains database-independent.
 
 ## Opaque bearer sessions
 
@@ -44,15 +43,41 @@ wildcards. `auth.Require` denies by default: no principal is `401`; a current
 principal without the permission is `403`. Authentication installs both the
 principal and its validated tenant in the request context.
 
-## Storage contract
+## Password hashing
 
-A session table should store at least the token digest, user ID, tenant ID,
-expiration, revocation time, and a credential/session version. The resolver
-must join or otherwise validate the current user and membership state. Index
-the digest uniquely. Never log, audit, or persist the plaintext bearer token.
+`auth.HashPassword` uses the Go 1.27 standard-library `crypto/pbkdf2`
+implementation with HMAC-SHA-256, a random 128-bit salt, a 256-bit derived key,
+and a default work factor of 600,000 iterations. The encoded form carries a
+version and work factor so future releases can identify hashes that should be
+upgraded after successful authentication.
 
-Schemas and a concrete session repository remain application-owned in this
-increment because account lifecycle, login identifiers, MFA, invitation, and
-role models are product decisions. Password hashing, login endpoints, cookie
-sessions/CSRF, recovery, MFA, and a generated identity schema are not yet
-implemented and must not be inferred from the bearer middleware.
+Forge never trims or normalizes passwords before hashing. Malformed hashes are
+rejected fail-closed and comparisons use constant-time equality.
+
+## PostgreSQL identity schema
+
+`auth/postgres.Migrations()` provides the Phase 3 identity schema:
+
+- users with normalized unique email, password hash, active/disabled status,
+  and a credential/session version;
+- organizations and tenants;
+- memberships, roles, permissions, and role assignments;
+- sessions containing only token digests, membership, credential version,
+  expiry, and revocation time.
+
+All entity identifiers default to PostgreSQL `uuidv7()`.
+
+`auth/postgres.Repository` implements `auth.Resolver`. Every resolution
+joins the live session, user, organization, tenant and membership state and
+recomputes permissions from current role assignments. `RevokeSession` is
+idempotent, while `RevokeUserSessions` increments the user's credential
+version and revokes existing sessions atomically.
+
+The plaintext bearer token is never stored.
+
+## Remaining Phase 3 work
+
+Login endpoints and login-identifier policy, cookie sessions and CSRF, account
+recovery, MFA, audit events, generated application wiring, and equivalent
+database-enforcement strategies for MySQL, MariaDB and SQLite are still
+planned.
