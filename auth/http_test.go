@@ -110,7 +110,6 @@ func TestLogoutHandlerIsStrictAndIdempotent(t *testing.T) {
 	}
 }
 
-
 func TestLoginHandlerReturnsRetryAfterWhenThrottled(t *testing.T) {
 	limiter, err := newMemoryLoginThrottler(LoginThrottleConfig{
 		Window:       time.Minute,
