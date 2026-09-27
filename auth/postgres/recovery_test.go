@@ -205,3 +205,34 @@ func TestPasswordRecoveryPrunesExpiredAndConsumedRows(t *testing.T) {
 		t.Fatalf("remaining=%d", remaining)
 	}
 }
+
+func TestPasswordRecoveryRejectsExpiredToken(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	insertIdentityFixture(t, db, userID, orgID, tenantID, membershipID, "expired@example.com", "expired@example.com", "Expired", "expired")
+
+	token, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := token.Digest()
+	if _, err := db.Exec(ctx, `
+		INSERT INTO forge_password_recovery (token_digest, user_id, expires_at)
+		VALUES ($1, $2, now() - interval '1 second')
+	`, digest[:], userID); err != nil {
+		t.Fatal(err)
+	}
+	nextHash, err := auth.HashPassword("replacement password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := repo.ConsumeRecovery(ctx, digest, nextHash)
+	if err != nil || consumed {
+		t.Fatalf("consumed=%v err=%v", consumed, err)
+	}
+}
