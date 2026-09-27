@@ -42,10 +42,11 @@ per source per one-hour window. The keys are SHA-256 domain-separated hashes;
 plaintext emails and network sources are not stored by the limiter. A blocked
 request returns `429 recovery_throttled` with `Retry-After`.
 
-For multi-replica PostgreSQL applications, the existing shared
-`auth/postgres.LoginThrottler` can be supplied through
-`auth.WithRecoveryThrottler`; recovery keys use a separate hash domain and do
-not collide with login keys.
+For multi-replica PostgreSQL applications, use
+`auth/postgres.NewRecoveryThrottler` through
+`auth.WithRecoveryThrottler`. It uses the shared PostgreSQL throttle table,
+while recovery keys use a separate hash domain and do not collide with login
+keys.
 
 `RecoverySender` should enqueue delivery and return promptly. A synchronous
 SMTP sender can create a measurable timing difference between known and unknown
@@ -82,7 +83,8 @@ increments `session_version`, revokes all sessions for the user, and consumes
 all outstanding recovery tokens. The same token cannot be used twice, and two
 different valid links racing for one user cannot both win.
 
-Successful reset responses are `204` and recovery responses are marked
+Successful reset responses are `204`. All responses from the recovery request
+and reset handlers, including errors and throttling responses, are marked
 `Cache-Control: no-store` / `Pragma: no-cache`.
 
 ## Storage and cleanup
