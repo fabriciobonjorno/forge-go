@@ -1,0 +1,27 @@
+// Command {{.Name}} runs the {{.Name}} service.
+//
+//	{{.Name}}              serve HTTP (default)
+//	{{.Name}} healthcheck  probe the running server; used by the Docker HEALTHCHECK
+{{- if .DB}}
+//	{{.Name}} migrate      apply database migrations ("migrate status" lists them)
+//	{{.Name}} rollback     revert the latest migration
+{{- end}}
+package main
+
+import (
+	forge "github.com/fabriciobonjorno/forge-go"
+{{- if .DB}}
+	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
+{{- end}}
+
+	"{{.Module}}/app/bootstrap"
+{{- if .DB}}
+	"{{.Module}}/db"
+{{- end}}
+)
+
+{{if .DB -}}
+func main() { forge.Main(bootstrap.Configure, {{.DB.Adapter}}.Commands(db.Migrations())...) }
+{{- else -}}
+func main() { forge.Main(bootstrap.Configure) }
+{{- end}}

@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+{{- if and .DB .DB.Server}}
+    services:
+      {{.DB.Service}}:
+        image: {{.DB.Image}}
+        env:
+{{- range .DB.CIEnv}}
+          {{index . 0}}: {{index . 1}}
+{{- end}}
+        ports:
+          - {{.DB.ContainerPort}}:{{.DB.ContainerPort}}
+        options: >-
+          --health-cmd "{{.DB.CIHealthCmd}}"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      FORGE_TEST_DATABASE_URL: {{.DB.CITestURL}}
+      # Fail instead of skipping database tests if the service is missing.
+      FORGE_TEST_REQUIRE_DATABASE: "true"
+{{- end}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Latest patch release, matching GO_VERSION in the Dockerfile.
+          go-version: "1.27.x"
+      - name: Format
+        run: test -z "$(find . -name '*.go' -not -path './vendor/*' -exec gofmt -l {} +)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: {{.Name}}:ci

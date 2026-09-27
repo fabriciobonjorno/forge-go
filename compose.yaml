@@ -1,0 +1,47 @@
+# Runs the example service (examples/basic-api) with PostgreSQL:
+#
+#   docker compose up --build
+#   curl -X POST -H 'Content-Type: application/json' -d '{"title":"try forge"}' http://127.0.0.1:8080/v1/tasks
+
+x-app: &app
+  build: .
+  environment:
+    FORGE_ENV: development
+    FORGE_HTTP_ADDR: 0.0.0.0:8080
+    FORGE_HTTP_TRANSPORT: plain
+    FORGE_DATABASE_URL: postgres://forge:development@postgres:5432/forge_example?sslmode=disable
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: development
+      POSTGRES_DB: forge_example
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge -d forge_example"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    <<: *app
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Longer than FORGE_HTTP_SHUTDOWN_TIMEOUT (30s) so in-flight requests drain.
+    stop_grace_period: 35s
+
+volumes:
+  postgres:

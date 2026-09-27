@@ -1,0 +1,45 @@
+// Package bootstrap is {{.Name}}'s composition root: it builds the adapters
+// and wires them into the Forge runtime.
+package bootstrap
+
+import (
+	"context"
+	"net/http"
+
+	forge "github.com/fabriciobonjorno/forge-go"
+{{- if .DB}}
+	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
+{{- end}}
+	"github.com/fabriciobonjorno/forge-go/web"
+)
+
+// Configure registers dependencies, readiness checks and routes. Keep
+// business rules in app/domain and app/application; only wire them here.
+{{- if .DB}}
+func Configure(ctx context.Context, app *forge.App) error {
+	database, err := {{.DB.Adapter}}.Open(ctx, app.Config().Database)
+	if err != nil {
+		return err
+	}
+	if err := app.OnShutdown(database.Shutdown); err != nil {
+		database.Close()
+		return err
+	}
+	if err := app.Readiness("database", database.Ping); err != nil {
+		return err
+	}
+	return routes(app)
+}
+{{- else}}
+func Configure(_ context.Context, app *forge.App) error {
+	return routes(app)
+}
+{{- end}}
+
+func routes(app *forge.App) error {
+	return app.HandleFunc("GET /v1/status", status)
+}
+
+func status(w http.ResponseWriter, _ *http.Request) {
+	web.JSON(w, http.StatusOK, map[string]string{"service": "{{.Name}}", "status": "ok"})
+}

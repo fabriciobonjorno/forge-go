@@ -1,0 +1,22 @@
+// Package db holds {{.Name}}'s SQL migrations. They are embedded in the binary,
+// so "{{.Name}} migrate" works inside the production image.
+//
+// Create one with: forge generate migration create_widgets
+package db
+
+import (
+	"embed"
+	"io/fs"
+)
+
+//go:embed all:migrations
+var files embed.FS
+
+// Migrations returns the files in db/migrations.
+func Migrations() fs.FS {
+	migrations, err := fs.Sub(files, "migrations")
+	if err != nil {
+		panic(err) // unreachable: "migrations" is a valid, embedded path
+	}
+	return migrations
+}

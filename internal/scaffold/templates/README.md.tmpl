@@ -1,0 +1,91 @@
+# {{.Name}}
+
+A [Forge](https://github.com/fabriciobonjorno/forge-go) application.
+
+## Run
+
+With Docker (the default):
+
+```bash
+docker compose up --build
+curl http://127.0.0.1:8080/v1/status
+```
+{{- if .DB}}
+{{- if .DB.Server}}
+
+This starts {{.DB.Title}}, applies migrations with a one-off `migrate`
+container, then starts the app. The database is published on
+`127.0.0.1:{{.DBHostPort}}`, a port derived from the application name so it does not
+clash with a locally installed server; change it in both `compose.yaml` and
+`.env.development` if needed.
+{{- else}}
+
+This applies migrations with a one-off `migrate` container, then starts the
+app. The SQLite database lives on the `storage` volume; locally, `forge dev`
+uses `storage/development.db`.
+{{- end}}
+{{- end}}
+
+Without Docker:
+
+```bash
+{{- if .DB}}
+{{- if .DB.Server}}
+docker compose up -d {{.DB.Service}}   # or any {{.DB.Title}} matching .env.development
+{{- end}}
+forge migrate
+{{- end}}
+forge dev
+```
+
+## Develop
+
+```bash
+forge test                               # go test ./... with .env.development loaded
+forge build                              # static binary in bin/{{.Name}}
+docker build -t {{.Name}} .                  # production image
+{{- if .DB}}
+forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql
+forge migrate                            # apply pending migrations
+forge migrate status
+forge rollback                           # revert the latest migration
+{{- end}}
+```
+
+## Layout
+
+| Path | Purpose |
+| --- | --- |
+| `cmd/{{.Name}}` | Process entrypoint: `serve` (default), `healthcheck`{{if .DB}}, `migrate`, `rollback`{{end}} |
+| `app/bootstrap` | Composition root: dependencies, readiness checks, routes |
+{{- if .DB}}
+| `db/migrations` | SQL migrations, embedded in the binary |
+{{- end}}
+| `Dockerfile` | Production image: static binary, distroless, non-root |
+| `compose.yaml` | Local stack running the same image in development mode |
+| `.env.development` | Development settings for the `forge` commands (no secrets) |
+
+Domain, application, adapter and infrastructure packages live under `app/`
+and are added as the application grows.
+
+## Deploy
+
+The image runs `serve` by default and reads `FORGE_*` variables. Production
+refuses insecure settings: TLS (or `FORGE_HTTP_TRANSPORT=trusted-proxy` behind
+a TLS-terminating proxy){{if and .DB .DB.ProductionTLS}} and {{.DB.ProductionTLS}} on
+`FORGE_DATABASE_URL`{{end}}.
+{{- if and .DB (not .DB.Server)}}
+
+The image stores the SQLite database in `/app/storage/production.db`; mount a
+persistent volume there and run a single application instance.
+{{- end}}
+{{- if .DB}}
+
+Run migrations before rolling out a release with the same image:
+
+```bash
+docker run --rm -e FORGE_ENV=production -e FORGE_DATABASE_URL=... {{.Name}} migrate
+```
+
+Concurrent `migrate` runs are serialized by {{.DB.MigrationLock}}.
+{{- end}}

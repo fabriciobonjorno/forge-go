@@ -1,0 +1,276 @@
+# Forge
+
+Forge is a Go framework for building HTTP services on PostgreSQL, MySQL,
+MariaDB, or SQLite with secure defaults, a conventional application layout,
+and a production container from the first commit. The core packages use only
+the Go standard library; each database adapter adds its driver.
+
+## Status
+
+Pre-release. Phases 1 (core runtime, configuration, CLI, lifecycle, HTTP) and
+2 (databases, migrations, transactions, repositories) are implemented,
+including support for several databases. Phase 3 has a first, intentionally
+bounded identity and tenancy foundation. APIs may change without notice until
+a tagged release.
+
+Not implemented yet: password/login flows and a concrete identity store,
+browser sessions/MFA, generated identity schemas, background jobs,
+OpenTelemetry, OpenAPI, and resource code generation. See
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Packages
+
+Core packages import only the standard library and each other; a test
+(`architecture_test.go`) enforces this
+([ADR 0007](docs/adr/0007-postgresql-adapter-with-pgx.md),
+[ADR 0009](docs/adr/0009-multiple-databases.md)).
+
+| Package      | Purpose |
+| ------------ | ------- |
+| `forge`      | `forge.Main` entrypoint, `App` composition, shutdown hooks, binary subcommands, health routes |
+| `auth`       | Opaque bearer-session tokens, current-session resolver middleware, principals and deny-by-default permissions |
+| `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
+| `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
+| `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405` |
+| `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown |
+| `web`        | JSON responses, the single error format, strict JSON decoding, request ID and request-scoped logger |
+| `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
+| `health`     | Readiness check registry; `/health`, `/health/live`, `/health/ready` |
+| `uuid`       | RFC 9562 UUIDv7 (default identifier), monotonic generator, JSON/text/SQL support |
+| `fault`      | Typed application errors (code, message, category, cause, metadata, retryable, HTTP status) |
+| `sqldb`      | Database-independent error translation, transaction retries, bounded pool shutdown, `database/sql` wrapper with a sqlc-compatible `DBTX` |
+| `migrate`    | Migration engine (SQL files, checksums, locks, `migrate`/`rollback` commands) with a per-database `Dialect` |
+| `dbtest`     | Test-server discovery shared by the adapters' test packages |
+
+Adapter packages (third-party dependencies allowed):
+
+| Package                 | Purpose |
+| ----------------------- | ------- |
+| `postgres`              | PostgreSQL on pgx v5: pool, `DBTX`, transactions with retry, error translation, advisory locks, migrations |
+| `mysql`                 | MySQL and MariaDB on go-sql-driver/mysql: hardened session, error translation, migrations |
+| `sqlite`                | SQLite on the pure-Go modernc.org/sqlite: enforced pragmas, error translation, migrations with a file lock |
+| `postgres/postgrestest`, `mysql/mysqltest`, `sqlite/sqlitetest` | A fresh database per test |
+
+An application links only the adapter it imports. The `forge` CLI lives in
+`cmd/forge`.
+
+## Quickstart
+
+Requires Go 1.27.1+ and Docker with BuildKit and Compose.
+
+```sh
+go install github.com/fabriciobonjorno/forge-go/cmd/forge@latest
+forge new myapp                 # PostgreSQL; or -d mysql, -d mariadb, -d sqlite, -d none
+cd myapp
+docker compose up --build
+curl -i http://127.0.0.1:8080/v1/status
+curl -i http://127.0.0.1:8080/health/ready   # includes the "database" check
+```
+
+| `--database` (`-d`) | Compose service | Adapter |
+| ------------------- | --------------- | ------- |
+| `postgresql` (default; also `postgres`, `pg`) | `postgres:18-alpine` | `postgres` |
+| `mysql` | `mysql:8.4` | `mysql` |
+| `mariadb` | `mariadb:11.8` | `mysql` |
+| `sqlite` (also `sqlite3`) | none; the database file is on a `storage` volume | `sqlite` |
+| `none` (same as `--skip-database`) | none | none |
+
+`docker compose up` starts the database server (if any), runs the
+application's `migrate` command once, then starts the application. A database
+server is published on `127.0.0.1:<port>`, a port between 20000 and 29999
+derived from the application name so it does not clash with a local server
+on its default port; the generated README and `.env.development` contain the
+exact value.
+
+Running the application outside Docker (server databases):
+
+```sh
+docker compose up -d postgres   # or mysql, mariadb
+forge migrate
+forge dev
+```
+
+With SQLite, `forge migrate` and `forge dev` use `storage/development.db`
+directly.
+
+Adding a table:
+
+```sh
+forge generate migration create_notes   # edit db/migrations/<timestamp>_create_notes.{up,down}.sql
+forge migrate
+forge test
+```
+
+`forge new myapp` generates:
+
+```text
+myapp/
+  go.mod
+  cmd/myapp/main.go            # forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)
+  app/bootstrap/bootstrap.go   # opens the database, readiness check "database", GET /v1/status
+  app/bootstrap/bootstrap_test.go
+  db/db.go                     # embeds db/migrations into the binary
+  db/migrations/.keep
+  .env.development             # committed development settings; no secrets
+  Dockerfile                   # multi-stage, distroless, nonroot
+  .dockerignore                # excludes .git, .github, storage, all .env* files
+  compose.yaml                 # database server (if any), one-off migrate, app
+  .gitignore                   # ignores .env, .env.local, .env.*.local (and /storage/ for SQLite)
+  README.md
+  .github/workflows/ci.yml     # gofmt, vet, test -race (with a database service), govulncheck, docker build
+  .github/dependabot.yml       # weekly Go module, Actions and Docker updates
+```
+
+With `--database none`, `db/`, the database wiring, and the Compose and CI
+database services are omitted. With SQLite, the image creates
+`/app/storage` owned by the nonroot user and sets
+`FORGE_DATABASE_URL=sqlite:///app/storage/production.db`; mount a persistent
+volume there.
+
+The generated `Dockerfile` builds a static binary (`CGO_ENABLED=0`, also for
+SQLite) and runs it in `gcr.io/distroless/static-debian12:nonroot`,
+configured for production behind a TLS-terminating proxy. See
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
+[docs/DATABASE.md](docs/DATABASE.md).
+
+## CLI
+
+| Command | Description |
+| ------- | ----------- |
+| `forge new NAME [--database DB] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
+| `forge dev [NAME]` | Build `./cmd/<name>` into a temporary directory and run it, forwarding interrupts for graceful shutdown |
+| `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
+| `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
+| `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command |
+| `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
+| `forge generate migration NAME` | Create `db/migrations/<UTC timestamp>_NAME.up.sql` and `.down.sql` |
+| `forge doctor` | Load and validate configuration; shows the database URL without password or query parameters (except `sslmode`) |
+| `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
+| `forge version` | Print CLI version, commit, and build date |
+
+`NAME` for `dev` and `build` is needed only if `cmd/` has several commands.
+`migrate` and `rollback` require exactly one.
+
+Flags for `forge new`:
+
+- `NAME` must match `^[a-z][a-z0-9-]{0,62}$`.
+- `--module PATH` sets the Go module path (default: `NAME`).
+- `--dir DIR` sets the output directory (default: `NAME`); it must be absent
+  or empty.
+- `--skip-deps` skips dependency resolution (`go get`, `go mod tidy`).
+- `--database DB` / `-d DB` chooses the database: `postgresql` (default;
+  aliases `postgres`, `pg`), `mysql`, `mariadb`, `sqlite` (alias `sqlite3`), or
+  `none`.
+- `--skip-database` is `--database none`; combining it with `--database` is
+  an error.
+- `--framework-path DIR` is for framework contributors: it adds a `replace`
+  directive pointing at a local checkout, then runs `go mod tidy` and
+  `go mod vendor` so the Docker build context is self-contained. Without it,
+  `forge new` runs `go get github.com/fabriciobonjorno/forge-go@<cli version or
+  latest>` followed by `go mod tidy`.
+
+`forge generate migration NAME` requires `NAME` to match
+`^[a-z][a-z0-9_]{0,99}$` and `db/migrations` to exist. If a migration with the
+same second already exists, the version is moved forward one second. It never
+overwrites a file.
+
+### Development environment files
+
+`forge dev`, `forge test`, `forge migrate`, `forge rollback`, and
+`forge doctor` read `.env.development` and then `.env.local` from the current
+directory; a later file overrides an earlier one, and variables already set in
+the process environment always win. `dev`, `test`, `migrate`, and `rollback`
+set `FORGE_ENV=development` when no source sets it.
+
+The format is deliberately small: `KEY=VALUE` lines, blank lines and lines
+starting with `#` ignored, an optional `export ` prefix, and one pair of
+matching single or double quotes removed from the value. There is no variable
+interpolation and no inline comment syntax. Parse errors name the line
+number, never its content.
+
+`.env.development` is committed and must not contain real secrets; put
+personal overrides in `.env.local`, which is git-ignored.
+
+### Application binary commands
+
+Binaries built with `forge.Main` accept:
+
+| Command | Description |
+| ------- | ----------- |
+| `serve` | Default. Serve HTTP until `SIGINT`/`SIGTERM` |
+| `healthcheck` | Probe `/health/live` on loopback; used by the Docker `HEALTHCHECK` |
+| `help` | List the available commands |
+| `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database) |
+
+Exit status is `0` on success, `1` on failure (including invalid
+configuration), and `2` for an unknown command or invalid arguments.
+
+## Example
+
+[`examples/basic-api`](examples/basic-api) is the reference service: a task
+API on PostgreSQL laid out in hexagonal layers (`app/domain`,
+`app/application`, `app/adapters/persistence`, `app/adapters/httpapi`,
+`app/bootstrap`) with SQL migrations in `db/migrations`. It demonstrates
+repositories on `DBTX`, a transaction, optimistic locking with a `version`
+column, keyset pagination, and the JSON error format. Endpoints:
+`POST /v1/tasks`, `GET /v1/tasks`, `GET /v1/tasks/{id}`, and
+`POST /v1/tasks/{id}/complete`.
+
+The repository's `compose.yaml` runs it with PostgreSQL:
+
+```sh
+docker compose up --build
+curl -i -X POST -H 'Content-Type: application/json' -d '{"title":"try forge"}' \
+  http://127.0.0.1:8080/v1/tasks
+```
+
+## Developing the framework
+
+```sh
+go vet ./...
+golangci-lint run
+go test -race ./...
+govulncheck ./...
+```
+
+SQLite tests always run. PostgreSQL and MySQL/MariaDB tests are skipped
+unless a server is configured whose user can create databases:
+
+```sh
+export FORGE_TEST_POSTGRES_URL='postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable'
+export FORGE_TEST_MYSQL_URL='mysql://root:forge@127.0.0.1:3306/mysql'   # MySQL or MariaDB
+```
+
+Set `FORGE_TEST_REQUIRE_DATABASE=true` to make a missing server a failure.
+
+CI (`.github/workflows/ci.yml`):
+
+- `quality`: gofmt, vet, golangci-lint, race tests against PostgreSQL 18
+  and MySQL 8.4 services, fuzzing of the scaffold name validation and the
+  pagination cursor, benchmarks, and govulncheck;
+- `mariadb`: the `mysql` adapter's tests against MariaDB 11.8;
+- `docker`: for each of PostgreSQL, MySQL, MariaDB, and SQLite, generates an
+  application, builds its image, and smoke-tests its Compose stack with
+  `docker compose up --wait` (the PostgreSQL run also builds the example
+  image).
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Authentication and authorization](docs/AUTHENTICATION.md)
+- [Database](docs/DATABASE.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Multi-tenancy](docs/MULTI_TENANCY.md)
+- [Security policy](SECURITY.md)
+- Architecture decision records: [docs/adr](docs/adr)
+  - [0001 UUIDv7 as the default identifier](docs/adr/0001-uuidv7-default-identifier.md)
+  - [0002 Standard library `net/http` core](docs/adr/0002-stdlib-net-http-core.md)
+  - [0003 Docker by default](docs/adr/0003-docker-by-default.md)
+  - [0004 Hexagonal application layout](docs/adr/0004-hexagonal-application-layout.md)
+  - [0005 Environment configuration, fail fast](docs/adr/0005-environment-configuration-fail-fast.md)
+  - [0006 Zero-dependency core](docs/adr/0006-zero-dependency-core.md)
+  - [0007 PostgreSQL adapter with pgx, in the main module](docs/adr/0007-postgresql-adapter-with-pgx.md)
+  - [0008 SQL migrations embedded in the application binary](docs/adr/0008-sql-migrations-embedded-in-the-binary.md)
+  - [0009 Multiple databases: PostgreSQL, MySQL, MariaDB and SQLite](docs/adr/0009-multiple-databases.md)

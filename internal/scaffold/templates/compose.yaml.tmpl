@@ -1,0 +1,100 @@
+{{- if .DB -}}
+{{- if .DB.Server -}}
+# Local stack for {{.Name}}: {{.DB.Image}}, a one-off migration run, then the
+# app (the production image, in development mode).
+#
+#   docker compose up --build                 start everything
+#   docker compose watch                      rebuild the app on source changes
+#   docker compose run --rm migrate rollback  revert the latest migration
+#   docker compose up -d {{.DB.Service}}  (database only, for `forge dev`)
+{{- else -}}
+# Local stack for {{.Name}}: a one-off migration run, then the app (the
+# production image, in development mode). The SQLite database lives on the
+# "storage" volume, shared by both containers.
+#
+#   docker compose up --build                 start everything
+#   docker compose watch                      rebuild the app on source changes
+#   docker compose run --rm migrate rollback  revert the latest migration
+{{- end}}
+
+x-app: &app
+  build: .
+  environment:
+    FORGE_ENV: development
+    FORGE_HTTP_ADDR: 0.0.0.0:8080
+    FORGE_HTTP_TRANSPORT: plain
+    FORGE_DATABASE_URL: {{.AppDatabaseURL}}
+{{- if not .DB.Server}}
+  volumes:
+    - storage:/app/storage
+{{- end}}
+
+services:
+{{- if .DB.Server}}
+  {{.DB.Service}}:
+    image: {{.DB.Image}}
+    environment:
+{{- range .DB.Env}}
+      {{index . 0}}: {{index . 1}}
+{{- end}}
+    ports:
+      - "127.0.0.1:{{.DBHostPort}}:{{.DB.ContainerPort}}"
+    volumes:
+      - {{.DB.Service}}:{{.DB.VolumePath}}
+    healthcheck:
+      test: {{.DB.Healthcheck}}
+      interval: 2s
+      timeout: 3s
+      retries: 30
+{{- end}}
+
+  migrate:
+    <<: *app
+    command: ["migrate"]
+{{- if .DB.Server}}
+    depends_on:
+      {{.DB.Service}}:
+        condition: service_healthy
+{{- end}}
+
+  app:
+    <<: *app
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Longer than FORGE_HTTP_SHUTDOWN_TIMEOUT (30s) so in-flight requests drain.
+    stop_grace_period: 35s
+    develop:
+      watch:
+        - action: rebuild
+          path: .
+
+volumes:
+{{- if .DB.Server}}
+  {{.DB.Service}}:
+{{- else}}
+  storage:
+{{- end}}
+{{- else -}}
+# Local stack for {{.Name}}: runs the production image in development mode.
+#
+#   docker compose up --build   start
+#   docker compose watch        rebuild on source changes
+services:
+  app:
+    build: .
+    environment:
+      FORGE_ENV: development
+      FORGE_HTTP_ADDR: 0.0.0.0:8080
+      FORGE_HTTP_TRANSPORT: plain
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Longer than FORGE_HTTP_SHUTDOWN_TIMEOUT (30s) so in-flight requests drain.
+    stop_grace_period: 35s
+    develop:
+      watch:
+        - action: rebuild
+          path: .
+{{- end}}

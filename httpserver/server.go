@@ -1,0 +1,153 @@
+// Package httpserver owns Forge's secure HTTP server defaults and lifecycle.
+package httpserver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
+	"time"
+
+	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/fabriciobonjorno/forge-go/web"
+)
+
+type Server struct {
+	server          *http.Server
+	transport       config.TransportMode
+	certFile        string
+	keyFile         string
+	shutdownTimeout time.Duration
+	logger          *slog.Logger
+}
+
+func New(cfg config.Config, handler http.Handler, logger *slog.Logger) (*Server, error) {
+	if handler == nil || logger == nil {
+		return nil, errors.New("HTTP handler and logger are required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	// Outermost first: every response, including 413 and recovered panics,
+	// carries the security headers and the request ID.
+	wrapped := securityHeaders(cfg, requestID(logger, recoverer(limitBody(cfg.HTTP.MaxBodyBytes, handler))))
+	return &Server{
+		server: &http.Server{
+			Addr:              cfg.HTTP.Address,
+			Handler:           wrapped,
+			ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
+			ReadTimeout:       cfg.HTTP.ReadTimeout,
+			WriteTimeout:      cfg.HTTP.WriteTimeout,
+			IdleTimeout:       cfg.HTTP.IdleTimeout,
+			MaxHeaderBytes:    cfg.HTTP.MaxHeaderBytes,
+		},
+		transport:       cfg.HTTP.Transport,
+		certFile:        cfg.HTTP.TLSCertFile,
+		keyFile:         cfg.HTTP.TLSKeyFile,
+		shutdownTimeout: cfg.HTTP.ShutdownTimeout,
+		logger:          logger,
+	}, nil
+}
+
+func (s *Server) Handler() http.Handler { return s.server.Handler }
+
+func (s *Server) Run(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("run context is required")
+	}
+	errorsChannel := make(chan error, 1)
+	go func() {
+		var err error
+		if s.transport == config.TransportTLS {
+			err = s.server.ListenAndServeTLS(s.certFile, s.keyFile)
+		} else {
+			err = s.server.ListenAndServe()
+		}
+		errorsChannel <- err
+	}()
+
+	select {
+	case err := <-errorsChannel:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return fmt.Errorf("serve HTTP: %w", err)
+	case <-ctx.Done():
+		shutdownContext, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		defer cancel()
+		if err := s.server.Shutdown(shutdownContext); err != nil {
+			// The drain deadline passed. Closing the connections cancels the
+			// remaining handlers' request contexts, so work holding resources
+			// such as database connections stops instead of outliving the
+			// process's grace period.
+			return errors.Join(fmt.Errorf("shutdown HTTP: %w", err), s.server.Close())
+		}
+		if err := <-errorsChannel; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve HTTP during shutdown: %w", err)
+		}
+		return nil
+	}
+}
+
+func securityHeaders(cfg config.Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if cfg.HTTP.Transport != config.TransportPlain {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func limitBody(limit int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > limit {
+			web.Error(w, r, fault.New("body_too_large", "request body too large", fault.CategoryInvalid, http.StatusRequestEntityTooLarge))
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requestID assigns every request a fresh UUIDv7. Incoming X-Request-ID
+// headers are not trusted. The ID and a logger carrying it are placed in the
+// request context (see web.RequestID and web.Logger).
+func requestID(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generated, err := uuid.New()
+		if err != nil {
+			web.Error(w, r.WithContext(web.WithLogger(r.Context(), logger)), fault.New("internal_error", "internal server error", fault.CategoryInternal, http.StatusInternalServerError).WithCause(err))
+			return
+		}
+		id := generated.String()
+		w.Header().Set("X-Request-ID", id)
+		ctx := web.WithRequestID(r.Context(), id)
+		ctx = web.WithLogger(ctx, logger.With("request_id", id))
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					panic(recovered)
+				}
+				web.Logger(r.Context()).Error("request panic", "method", r.Method, "path", r.URL.Path, "panic", recovered, "stack", string(debug.Stack()))
+				web.JSON(w, http.StatusInternalServerError, web.ErrorBody{Error: web.ErrorDetail{
+					Code: "internal_error", Message: "internal server error", RequestID: web.RequestID(r.Context()),
+				}})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}

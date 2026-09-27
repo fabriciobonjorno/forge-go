@@ -1,0 +1,13 @@
+/bin/
+/tmp/
+coverage.out
+*.prof
+*.test
+{{- if and .DB (not .DB.Server)}}
+# SQLite databases.
+/storage/
+{{- end}}
+# Local secrets and overrides. .env.development is committed on purpose.
+.env
+.env.local
+.env.*.local

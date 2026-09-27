@@ -1,0 +1,71 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"io/fs"
+	"log/slog"
+	"strconv"
+
+	"github.com/jackc/pgx/v5/stdlib"
+
+	forge "github.com/fabriciobonjorno/forge-go"
+	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/fabriciobonjorno/forge-go/migrate"
+)
+
+// migrationLockKey serializes migrators across processes and replicas.
+var migrationLockKey = LockKey("forge:schema_migrations")
+
+// NewMigrator returns a migrator for the database cfg points at. It opens its
+// own dedicated connections, never ones from an application pool; close it
+// when done.
+func NewMigrator(cfg config.Database, migrations []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
+	poolConfig, err := parseConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return migrate.New(stdlib.OpenDB(*poolConfig.ConnConfig), dialect{}, migrations, logger)
+}
+
+// Commands returns the migrate and rollback subcommands for an application
+// binary; see migrate.Commands.
+func Commands(migrations fs.FS) []forge.Command {
+	return migrate.Commands(migrations, func(_ context.Context, cfg config.Database, loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
+		return NewMigrator(cfg, loaded, logger)
+	})
+}
+
+// dialect is PostgreSQL for the migration engine.
+type dialect struct{}
+
+func (dialect) Placeholder(n int) string { return "$" + strconv.Itoa(n) }
+
+func (dialect) PrepareSession(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, "SET statement_timeout = 0")
+	return err
+}
+
+func (dialect) TryLock(ctx context.Context, conn *sql.Conn) (bool, error) {
+	var acquired bool
+	err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", migrationLockKey).Scan(&acquired)
+	return acquired, err
+}
+
+func (dialect) Unlock(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrationLockKey)
+	return err
+}
+
+// SessionIdentity is the database and search_path the bookkeeping relies on.
+func (dialect) SessionIdentity(ctx context.Context, q migrate.Queryer) (string, error) {
+	var identity string
+	err := q.QueryRowContext(ctx, "SELECT current_database() || ' search_path=' || current_setting('search_path')").Scan(&identity)
+	return identity, err
+}
+
+func (dialect) TableExists(ctx context.Context, conn *sql.Conn, table string) (bool, error) {
+	var exists bool
+	err := conn.QueryRowContext(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists)
+	return exists, err
+}

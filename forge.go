@@ -1,0 +1,200 @@
+// Package forge composes the framework runtime.
+package forge
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/fabriciobonjorno/forge-go/health"
+	"github.com/fabriciobonjorno/forge-go/httpserver"
+	"github.com/fabriciobonjorno/forge-go/router"
+	"github.com/fabriciobonjorno/forge-go/web"
+)
+
+const liveRoutePath = "/health/live"
+
+type Option func(*options) error
+
+type options struct {
+	config config.Config
+	logger *slog.Logger
+}
+
+type App struct {
+	config config.Config
+	logger *slog.Logger
+	router *router.Router
+	health *health.Registry
+	server *httpserver.Server
+
+	hooksMu       sync.Mutex
+	shutdownHooks []ShutdownHook
+	closed        bool
+}
+
+// ShutdownHook releases a resource, such as a database pool, after the HTTP
+// server has drained. ctx is bounded by the configured shutdown timeout.
+type ShutdownHook func(ctx context.Context) error
+
+func New(opts ...Option) (*App, error) {
+	settings := options{
+		config: config.Default(),
+		logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+	}
+	for _, option := range opts {
+		if option == nil {
+			return nil, errors.New("nil Forge option")
+		}
+		if err := option(&settings); err != nil {
+			return nil, err
+		}
+	}
+	if err := settings.config.Validate(); err != nil {
+		return nil, err
+	}
+
+	app := &App{
+		config: settings.config,
+		logger: settings.logger,
+		router: router.New(),
+		health: health.New(),
+	}
+	if err := app.registerHealthRoutes(); err != nil {
+		return nil, err
+	}
+	server, err := httpserver.New(app.config, app.router, app.logger)
+	if err != nil {
+		return nil, err
+	}
+	app.server = server
+	return app, nil
+}
+
+func WithConfig(cfg config.Config) Option {
+	return func(settings *options) error {
+		settings.config = cfg
+		return nil
+	}
+}
+
+func WithLogger(logger *slog.Logger) Option {
+	return func(settings *options) error {
+		if logger == nil {
+			return errors.New("logger is required")
+		}
+		settings.logger = logger
+		return nil
+	}
+}
+
+// Config returns the validated configuration the application was built with.
+func (a *App) Config() config.Config { return a.config }
+
+// Logger returns the application logger.
+func (a *App) Logger() *slog.Logger { return a.logger }
+
+// OnShutdown registers a hook that runs after the HTTP server stops, in
+// reverse registration order, like deferred calls.
+func (a *App) OnShutdown(hook ShutdownHook) error {
+	if hook == nil {
+		return errors.New("shutdown hook is required")
+	}
+	a.hooksMu.Lock()
+	defer a.hooksMu.Unlock()
+	if a.closed {
+		return errors.New("application already shut down")
+	}
+	a.shutdownHooks = append(a.shutdownHooks, hook)
+	return nil
+}
+
+// Close runs the shutdown hooks once. Run calls it; call it directly only when
+// the application is discarded without running.
+func (a *App) Close(ctx context.Context) error {
+	a.hooksMu.Lock()
+	if a.closed {
+		a.hooksMu.Unlock()
+		return nil
+	}
+	a.closed = true
+	hooks := slices.Clone(a.shutdownHooks)
+	a.hooksMu.Unlock()
+
+	var errs []error
+	for _, hook := range slices.Backward(hooks) {
+		if err := hook(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("shutdown hooks: %w", err)
+	}
+	return nil
+}
+
+func (a *App) Handle(pattern string, handler http.Handler) error {
+	return a.router.Handle(pattern, handler)
+}
+
+func (a *App) HandleFunc(pattern string, handler http.HandlerFunc) error {
+	return a.router.HandleFunc(pattern, handler)
+}
+
+func (a *App) Readiness(name string, check health.Check) error {
+	return a.health.Register(name, check)
+}
+
+func (a *App) Routes() []router.Route { return a.router.Routes() }
+
+func (a *App) Handler() http.Handler { return a.server.Handler() }
+
+// Run serves HTTP until ctx is cancelled, then drains in-flight requests and
+// runs the shutdown hooks. Draining and hooks share one budget,
+// FORGE_HTTP_SHUTDOWN_TIMEOUT, counted from cancellation, so the whole
+// shutdown fits inside an orchestrator grace period set slightly above it.
+func (a *App) Run(ctx context.Context) error {
+	var stoppedAt atomic.Pointer[time.Time]
+	stopWatching := context.AfterFunc(ctx, func() {
+		now := time.Now()
+		stoppedAt.Store(&now)
+	})
+	defer stopWatching()
+
+	runErr := a.server.Run(ctx)
+	deadline := time.Now().Add(a.config.HTTP.ShutdownTimeout)
+	if stopped := stoppedAt.Load(); stopped != nil {
+		deadline = stopped.Add(a.config.HTTP.ShutdownTimeout)
+	}
+	closeCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancel()
+	return errors.Join(runErr, a.Close(closeCtx))
+}
+
+func (a *App) registerHealthRoutes() error {
+	if err := a.router.HandleFunc("GET "+liveRoutePath, func(w http.ResponseWriter, _ *http.Request) {
+		web.JSON(w, http.StatusOK, map[string]string{"status": "live"})
+	}); err != nil {
+		return err
+	}
+	ready := func(w http.ResponseWriter, r *http.Request) {
+		result := a.health.Ready(r.Context())
+		status := http.StatusOK
+		if !result.Healthy {
+			status = http.StatusServiceUnavailable
+		}
+		web.JSON(w, status, result)
+	}
+	if err := a.router.HandleFunc("GET /health/ready", ready); err != nil {
+		return err
+	}
+	return a.router.HandleFunc("GET /health", ready)
+}

@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.27.x"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forge"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: forge
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pforge"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      FORGE_TEST_POSTGRES_URL: postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable
+      FORGE_TEST_MYSQL_URL: mysql://root:forge@127.0.0.1:3306/mysql
+      # Database tests fail instead of skipping when a server is missing.
+      FORGE_TEST_REQUIRE_DATABASE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13
+      - name: Test (race)
+        run: go test -race -count=1 ./...
+      - name: Fuzz
+        run: |
+          go test -run='^$' -fuzz=FuzzNormalizeNeverAcceptsPathEscapes -fuzztime=30s ./internal/scaffold
+          go test -run='^$' -fuzz=FuzzDecodeCursor -fuzztime=30s ./pagination
+      - name: Benchmarks
+        run: go test -run='^$' -bench=. -benchmem ./...
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  mariadb:
+    # The mysql adapter also serves MariaDB, whose error codes and statement
+    # timeout differ: run its tests against a real MariaDB too.
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: forge
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      FORGE_TEST_MYSQL_URL: mysql://root:forge@127.0.0.1:3306/mysql
+      FORGE_TEST_REQUIRE_DATABASE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Test the mysql adapter against MariaDB
+        run: go test -race -count=1 ./mysql/...
+
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [postgresql, mysql, mariadb, sqlite]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Build example image
+        if: matrix.database == 'postgresql'
+        run: docker build -t forge-example:ci .
+      - name: Generate an application
+        run: go run ./cmd/forge new ciapp --database "${{ matrix.database }}" --dir "$RUNNER_TEMP/ciapp" --framework-path "$GITHUB_WORKSPACE"
+      - name: Build the generated production image
+        run: docker build -t ciapp:ci "$RUNNER_TEMP/ciapp"
+      - name: Smoke test the generated compose stack
+        working-directory: ${{ runner.temp }}/ciapp
+        run: |
+          docker compose up --build --detach --wait
+          curl -fsS http://127.0.0.1:8080/v1/status
+          curl -fsS http://127.0.0.1:8080/health/ready | grep -q '"healthy":true'
+          docker compose run --rm migrate migrate status
+      - name: Compose logs
+        if: failure()
+        working-directory: ${{ runner.temp }}/ciapp
+        run: docker compose logs
+      - name: Stop the stack
+        if: always()
+        working-directory: ${{ runner.temp }}/ciapp
+        run: docker compose down --volumes

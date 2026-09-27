@@ -1,0 +1,65 @@
+package bootstrap
+
+import (
+{{- if .DB}}
+	"context"
+{{- end}}
+	"net/http"
+	"net/http/httptest"
+{{- if .DB}}
+	"strings"
+{{- end}}
+	"testing"
+
+	forge "github.com/fabriciobonjorno/forge-go"
+{{- if .DB}}
+	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
+{{- end}}
+)
+
+func TestRoutes(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := routes(app); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/status", "/health/live"} {
+		recorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+{{- if .DB}}
+
+{{- if .DB.Server}}
+// TestConfigureConnectsToDatabase needs FORGE_TEST_DATABASE_URL (`forge test`
+// reads it from .env.development); it is skipped otherwise.
+{{- else}}
+// TestConfigureConnectsToDatabase runs against a temporary SQLite file.
+{{- end}}
+func TestConfigureConnectsToDatabase(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Database = {{.DB.TestPackage}}.Config(t)
+	app, err := forge.New(forge.WithConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Close(context.Background()) })
+
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"database"`) {
+		t.Fatalf("readiness status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+{{- end}}

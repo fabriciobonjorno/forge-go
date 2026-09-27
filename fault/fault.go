@@ -1,0 +1,89 @@
+// Package fault defines stable application errors without exposing internal causes.
+package fault
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+)
+
+type Category string
+
+const (
+	CategoryInvalid      Category = "invalid"
+	CategoryUnauthorized Category = "unauthorized"
+	CategoryForbidden    Category = "forbidden"
+	CategoryNotFound     Category = "not_found"
+	CategoryConflict     Category = "conflict"
+	CategoryUnavailable  Category = "unavailable"
+	CategoryInternal     Category = "internal"
+)
+
+type Error struct {
+	Code       string
+	Message    string
+	Category   Category
+	Cause      error
+	Metadata   map[string]string
+	Retryable  bool
+	HTTPStatus int
+}
+
+func New(code, message string, category Category, status int) *Error {
+	return &Error{Code: code, Message: message, Category: category, HTTPStatus: status}
+}
+
+func (e *Error) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+func (e *Error) Unwrap() error { return e.Cause }
+
+// Is matches another *Error with the same Code, so errors.Is recognizes a
+// sentinel even after WithCause or Metadata produced a copy of it.
+func (e *Error) Is(target error) bool {
+	other, ok := target.(*Error)
+	return ok && e != nil && other != nil && e.Code == other.Code
+}
+
+func (e *Error) WithCause(cause error) *Error {
+	copy := *e
+	copy.Cause = cause
+	return &copy
+}
+
+// Status returns the HTTP status for the error: the explicit HTTPStatus when
+// set, otherwise the default for its category.
+func (e *Error) Status() int {
+	if e.HTTPStatus != 0 {
+		return e.HTTPStatus
+	}
+	switch e.Category {
+	case CategoryInvalid:
+		return http.StatusBadRequest
+	case CategoryUnauthorized:
+		return http.StatusUnauthorized
+	case CategoryForbidden:
+		return http.StatusForbidden
+	case CategoryNotFound:
+		return http.StatusNotFound
+	case CategoryConflict:
+		return http.StatusConflict
+	case CategoryUnavailable:
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// From returns the first *Error in err's chain, or nil.
+func From(err error) *Error {
+	var target *Error
+	if errors.As(err, &target) {
+		return target
+	}
+	return nil
+}
