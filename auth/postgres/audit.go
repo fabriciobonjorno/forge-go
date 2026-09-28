@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"time"
 
 	"github.com/fabriciobonjorno/forge-go/auth"
 	"github.com/fabriciobonjorno/forge-go/uuid"
@@ -67,6 +66,3 @@ func nullableString(value string) any {
 	return value
 }
 
-// Keep time imported here so gofmt/go vet catches accidental type drift in
-// future changes to SecurityEvent.OccurredAt.
-var _ time.Time
