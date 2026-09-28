@@ -138,18 +138,16 @@ func (r *Repository) ConfirmTOTPEnrollment(
 			return errors.New("MFA enrollment digest changed while locked")
 		}
 
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO forge_totp_factors
 				(user_id, secret_digest, secret_ciphertext, last_counter, enabled_at, updated_at)
 			VALUES ($1, $2, $3, $4, now(), now())
-			ON CONFLICT (user_id) DO UPDATE
-			SET secret_digest = EXCLUDED.secret_digest,
-			    secret_ciphertext = EXCLUDED.secret_ciphertext,
-			    last_counter = EXCLUDED.last_counter,
-			    enabled_at = now(),
-			    updated_at = now()
-		`, subjectID, secretDigest[:], ciphertext, counter); err != nil {
+		`, subjectID, secretDigest[:], ciphertext, counter)
+		if err != nil {
 			return postgres.Translate(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("TOTP factor was not created while enrollment was locked")
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE forge_users
@@ -371,7 +369,7 @@ func (r *Repository) ConsumeMFAChallenge(
 			return postgres.Translate(err)
 		}
 		if tag.RowsAffected() != 1 {
-			return nil
+			return errors.New("TOTP replay watermark changed while factor was locked")
 		}
 		tag, err = tx.Exec(ctx, `
 			UPDATE forge_mfa_challenges
@@ -383,7 +381,7 @@ func (r *Repository) ConsumeMFAChallenge(
 			return postgres.Translate(err)
 		}
 		if tag.RowsAffected() != 1 {
-			return nil
+			return errors.New("MFA challenge changed while it was locked")
 		}
 		consumed = true
 		return nil
