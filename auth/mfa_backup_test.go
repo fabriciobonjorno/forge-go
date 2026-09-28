@@ -37,7 +37,7 @@ func TestParseMFABackupCodeRejectsMalformedValues(t *testing.T) {
 	for _, value := range []string{
 		"",
 		"ABCD",
-		"ABCD-EFGH-IJKL-MNOP-QRST-UVWX",
+		"ABCD-EFGH-0JKL-MNOP-QRST-UVWX",
 		"AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-extra",
 		"!!!!-!!!!-!!!!-!!!!-!!!!-!!!!",
 	} {
