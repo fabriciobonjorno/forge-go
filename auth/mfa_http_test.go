@@ -29,8 +29,9 @@ func TestLoginHandlerReturnsMFAChallengeWithoutSession(t *testing.T) {
 		identity: PasswordIdentity{
 			SubjectID:    uuid.MustNew(),
 			MembershipID: membershipID,
-			PasswordHash: hash,
-			MFARequired:  true,
+			PasswordHash:      hash,
+			CredentialVersion: 1,
+			MFARequired:       true,
 		},
 	}
 	sessions := &sessionStub{}
@@ -94,7 +95,8 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 		challengeFound: true,
 		challenge: MFAChallengeRecord{
 			SubjectID:        uuid.MustNew(),
-			MembershipID:     membershipID,
+			MembershipID:      membershipID,
+			CredentialVersion: 1,
 			SecretDigest:     sha256.Sum256(secret),
 			SecretCiphertext: sealed,
 			LastCounter:      -1,
