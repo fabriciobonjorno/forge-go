@@ -26,11 +26,17 @@ type Opener func(ctx context.Context, cfg config.Database, migrations []Migratio
 // migrate its own database (for example as a one-off container or a
 // Kubernetes Job) with no extra tooling.
 func Commands(migrations fs.FS, open Opener) []forge.Command {
+	return CommandsFromSets([]fs.FS{migrations}, open)
+}
+
+// CommandsFromSets is Commands for several independent migration filesystems.
+// Sets are validated and merged by version before a database connection opens.
+func CommandsFromSets(migrationSets []fs.FS, open Opener) []forge.Command {
 	return []forge.Command{
 		{Name: "migrate", Summary: "apply pending database migrations; \"migrate status\" lists them", Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
 			switch {
 			case len(args) == 0:
-				return withMigrator(ctx, env, migrations, open, func(m *Migrator) error {
+				return withMigrator(ctx, env, migrationSets, open, func(m *Migrator) error {
 					applied, err := m.Up(ctx)
 					for _, migration := range applied {
 						fmt.Fprintf(env.Stdout, "applied  %d_%s\n", migration.Version, migration.Name)
@@ -41,7 +47,7 @@ func Commands(migrations fs.FS, open Opener) []forge.Command {
 					return err
 				})
 			case len(args) == 1 && args[0] == "status":
-				return withMigrator(ctx, env, migrations, open, func(m *Migrator) error {
+				return withMigrator(ctx, env, migrationSets, open, func(m *Migrator) error {
 					statuses, err := m.Status(ctx)
 					if err != nil {
 						return err
@@ -69,7 +75,7 @@ func Commands(migrations fs.FS, open Opener) []forge.Command {
 			if flags.NArg() != 0 || *steps < 1 {
 				return fmt.Errorf("%w: rollback [-steps N] with N >= 1", forge.ErrUsage)
 			}
-			return withMigrator(ctx, env, migrations, open, func(m *Migrator) error {
+			return withMigrator(ctx, env, migrationSets, open, func(m *Migrator) error {
 				reverted, err := m.Down(ctx, *steps)
 				for _, migration := range reverted {
 					fmt.Fprintf(env.Stdout, "reverted %d_%s\n", migration.Version, migration.Name)
@@ -80,9 +86,9 @@ func Commands(migrations fs.FS, open Opener) []forge.Command {
 	}
 }
 
-func withMigrator(ctx context.Context, env forge.CommandEnv, migrationFS fs.FS, open Opener, fn func(*Migrator) error) (err error) {
-	// Validate the files before touching the database.
-	migrations, err := LoadMigrations(migrationFS)
+func withMigrator(ctx context.Context, env forge.CommandEnv, migrationSets []fs.FS, open Opener, fn func(*Migrator) error) (err error) {
+	// Validate every set and global version uniqueness before touching the database.
+	migrations, err := LoadMigrationSets(migrationSets...)
 	if err != nil {
 		return err
 	}

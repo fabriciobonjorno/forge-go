@@ -46,6 +46,15 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 			Source:     requestSource(r),
 		})
 		if err != nil {
+			var auditFailure *SecurityAuditError
+			if errors.As(err, &auditFailure) &&
+				(errors.Is(err, ErrCredentialsInvalid) || errors.Is(err, ErrLoginThrottled)) {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", auditFailure.Cause,
+				)
+			}
 			var throttled *LoginThrottledError
 			switch {
 			case errors.As(err, &throttled):
@@ -79,6 +88,20 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 // valid but unknown/already-revoked token still returns 204 and does not become
 // a credential oracle.
 func NewLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
+	return newLogoutHandler(revoker, nil)
+}
+
+// NewAuditedLogoutHandler is NewLogoutHandler with structured security audit.
+// A failure to persist the audit event is logged but does not undo a successful
+// revocation or change the idempotent 204 response.
+func NewAuditedLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newLogoutHandler(revoker, auditor)
+}
+
+func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
 	if revoker == nil {
 		return nil, errors.New("session revoker is required")
 	}
@@ -96,6 +119,19 @@ func NewLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
 		if err := revoker.RevokeSession(r.Context(), token); err != nil {
 			web.Error(w, r, err)
 			return
+		}
+		if auditor != nil {
+			if err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+				Kind:             SecuritySessionRevoked,
+				Outcome:          SecurityOutcomeSucceeded,
+				CredentialDigest: token.Digest(),
+			}); err != nil {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", err,
+				)
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}), nil
