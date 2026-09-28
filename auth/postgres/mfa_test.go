@@ -67,8 +67,12 @@ func TestTOTPLoginFlowAgainstPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := testTOTPCode(rawSecret, now)
-	if _, err := mfa.ConfirmTOTPEnrollment(ctx, userID, code); err != nil {
+	confirmation, err := mfa.ConfirmTOTPEnrollment(ctx, userID, code)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(confirmation.BackupCodes) != auth.DefaultMFABackupCodeCount {
+		t.Fatalf("backup code count=%d", len(confirmation.BackupCodes))
 	}
 	if _, err := mfa.BeginTOTPEnrollment(ctx, userID, "Forge", "alice@example.com"); !errors.Is(err, auth.ErrMFAAlreadyEnabled) {
 		t.Fatalf("second enrollment error=%v", err)
@@ -120,6 +124,59 @@ func TestTOTPLoginFlowAgainstPostgres(t *testing.T) {
 		t.Fatalf("replayed challenge error=%v", err)
 	}
 }
+
+	now = now.Add(30 * time.Second)
+	backupChallenge, err := login.Login(ctx, auth.LoginInput{
+		Email:      "alice@example.com",
+		Password:   "correct-password",
+		TenantSlug: "acme",
+		Source:     "192.0.2.10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupCode := confirmation.BackupCodes[0].Reveal()
+	backupSession, err := mfa.CompleteLogin(ctx, auth.MFACompletion{
+		ChallengeToken: backupChallenge.MFAChallenge.Reveal(),
+		Code:           backupCode,
+		Source:         "192.0.2.10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := repo.ResolveSession(ctx, backupSession.Token.Digest()); err != nil || !found {
+		t.Fatalf("backup-code session found=%v err=%v", found, err)
+	}
+
+	replayChallenge, err := login.Login(ctx, auth.LoginInput{
+		Email:      "alice@example.com",
+		Password:   "correct-password",
+		TenantSlug: "acme",
+		Source:     "192.0.2.10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mfa.CompleteLogin(ctx, auth.MFACompletion{
+		ChallengeToken: replayChallenge.MFAChallenge.Reveal(),
+		Code:           backupCode,
+		Source:         "192.0.2.10",
+	}); !errors.Is(err, auth.ErrMFAInvalid) {
+		t.Fatalf("replayed backup code error=%v", err)
+	}
+
+	var remaining int
+	if err := db.QueryRow(ctx, `
+		SELECT count(*)
+		FROM forge_mfa_backup_codes
+		WHERE user_id = $1 AND consumed_at IS NULL
+	`, userID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != auth.DefaultMFABackupCodeCount-1 {
+		t.Fatalf("remaining backup codes=%d", remaining)
+	}
+
 
 func TestMFAChallengeDiesAfterCredentialVersionChange(t *testing.T) {
 	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
