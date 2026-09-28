@@ -39,11 +39,20 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 		})
 		if err != nil {
 			var throttled *RecoveryThrottledError
-			if errors.As(err, &throttled) {
+			var delivery *RecoveryDeliveryError
+			switch {
+			case errors.As(err, &throttled):
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
+				web.Error(w, r, err)
+				return
+			case errors.As(err, &delivery):
+				// Delivery failures are account-dependent. Preserve a
+				// non-enumerating public response; sender implementations
+				// remain responsible for logging/alerting their failure.
+			default:
+				web.Error(w, r, err)
+				return
 			}
-			web.Error(w, r, err)
-			return
 		}
 		web.JSON(w, http.StatusAccepted, recoveryAcceptedResponse{Status: "accepted"})
 	}), nil
