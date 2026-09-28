@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/fabriciobonjorno/forge-go/tenancy"
 )
 
 // DBTX is satisfied by *DB, *sql.DB, *sql.Tx and *sql.Conn, so a repository
@@ -27,6 +28,36 @@ type DB struct {
 }
 
 var _ DBTX = (*DB)(nil)
+
+// TenantTx is an application-layer tenant-scoped transaction for database/sql
+// adapters. It deliberately does not claim database-level row isolation:
+// repositories must include tx.Tenant().ID in every tenant-owned key and
+// predicate. The wrapper keeps the resolved tenant next to the transaction and
+// does not expose the underlying *sql.Tx.
+type TenantTx struct {
+	tx     *sql.Tx
+	tenant tenancy.Tenant
+}
+
+var _ DBTX = (*TenantTx)(nil)
+
+func (t *TenantTx) Tenant() tenancy.Tenant { return t.tenant }
+
+func (t *TenantTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return t.tx.ExecContext(ctx, query, args...)
+}
+
+func (t *TenantTx) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	return t.tx.PrepareContext(ctx, query)
+}
+
+func (t *TenantTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return t.tx.QueryContext(ctx, query, args...)
+}
+
+func (t *TenantTx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return t.tx.QueryRowContext(ctx, query, args...)
+}
 
 // New wraps db, applying the pool limits from cfg.
 func New(db *sql.DB, cfg config.Database, classify Classifier) (*DB, error) {
@@ -70,6 +101,30 @@ type TxOptions struct {
 	// Retried functions run again from the start, so they must not have
 	// effects outside the transaction.
 	Attempts int
+}
+
+// InTenantTx runs fn only after resolving an explicit tenant from ctx. It is
+// the tenant-owned repository boundary for MySQL, MariaDB and SQLite: unlike
+// PostgreSQL RLS it cannot inspect or rewrite SQL, so every tenant-owned query
+// must still predicate on tx.Tenant().ID.
+func (d *DB) InTenantTx(ctx context.Context, fn func(tx *TenantTx) error) error {
+	return d.InTenantTxWith(ctx, TxOptions{}, fn)
+}
+
+// InTenantTxWith is InTenantTx with explicit transaction options. Tenant
+// resolution happens before a connection or transaction is acquired, and the
+// same resolved tenant is carried through every transaction retry.
+func (d *DB) InTenantTxWith(ctx context.Context, opts TxOptions, fn func(tx *TenantTx) error) error {
+	if fn == nil {
+		return errors.New("tenant transaction function is required")
+	}
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return err
+	}
+	return d.InTxWith(ctx, opts, func(tx *sql.Tx) error {
+		return fn(&TenantTx{tx: tx, tenant: tenant})
+	})
 }
 
 // InTx runs fn in a transaction that commits when fn returns nil and rolls
