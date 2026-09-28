@@ -175,3 +175,56 @@ func TestLoginServiceAgainstPostgresRepository(t *testing.T) {
 		t.Fatalf("wrong tenant error=%v", err)
 	}
 }
+
+
+func TestCreateSessionAtVersionRejectsCredentialRace(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	passwordHash, err := auth.HashPassword("correct-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES ($1, 'race@example.com', 'race@example.com', $2)", userID, passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_organizations (id, name) VALUES ($1, 'Race')", orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_tenants (id, organization_id, slug) VALUES ($1, $2, 'race')", tenantID, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_memberships (id, user_id, tenant_id) VALUES ($1, $2, $3)", membershipID, userID, tenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	identity, found, err := repo.LookupPassword(ctx, "race@example.com", "race")
+	if err != nil || !found {
+		t.Fatalf("LookupPassword() found=%v err=%v", found, err)
+	}
+	if identity.CredentialVersion != 1 {
+		t.Fatalf("credential version=%d", identity.CredentialVersion)
+	}
+
+	if err := repo.RevokeUserSessions(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateSessionAtVersion(ctx, membershipID, identity.CredentialVersion, time.Now().Add(time.Hour)); !errors.Is(err, auth.ErrCredentialsInvalid) {
+		t.Fatalf("stale verified credential created session: %v", err)
+	}
+
+	fresh, found, err := repo.LookupPassword(ctx, "race@example.com", "race")
+	if err != nil || !found {
+		t.Fatalf("fresh LookupPassword() found=%v err=%v", found, err)
+	}
+	if fresh.CredentialVersion != 2 {
+		t.Fatalf("fresh credential version=%d", fresh.CredentialVersion)
+	}
+	if _, err := repo.CreateSessionAtVersion(ctx, membershipID, fresh.CredentialVersion, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("fresh credential session: %v", err)
+	}
+}
