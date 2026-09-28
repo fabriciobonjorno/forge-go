@@ -267,3 +267,81 @@ func FuzzParseRecoveryTokenNeverPanics(f *testing.F) {
 		_, _ = ParseRecoveryToken(value)
 	})
 }
+
+
+func TestRecoveryAuditsKnownAndUnknownRequests(t *testing.T) {
+	subjectID := uuid.MustNew()
+	store := &recoveryStoreStub{
+		found:    true,
+		identity: RecoveryIdentity{SubjectID: subjectID, Email: "alice@example.com"},
+	}
+	auditor := &securityAuditorStub{}
+	service, err := NewRecoveryService(
+		store,
+		&recoverySenderStub{},
+		WithRecoveryAuditor(auditor),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Request(context.Background(), RecoveryRequest{
+		Email: "alice@example.com", TenantSlug: "acme", Source: "192.0.2.10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(auditor.events) != 1 ||
+		auditor.events[0].Kind != SecurityRecoveryRequested ||
+		auditor.events[0].Outcome != SecurityOutcomeSucceeded ||
+		auditor.events[0].SubjectID != subjectID ||
+		auditor.events[0].AccountDigest == (Digest{}) ||
+		auditor.events[0].SourceDigest == (Digest{}) ||
+		auditor.events[0].CredentialDigest == (Digest{}) {
+		t.Fatalf("known recovery audit=%+v", auditor.events)
+	}
+
+	store.found = false
+	if err := service.Request(context.Background(), RecoveryRequest{
+		Email: "nobody@example.com", TenantSlug: "acme", Source: "192.0.2.10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(auditor.events) != 2 ||
+		auditor.events[1].Kind != SecurityRecoveryRequested ||
+		auditor.events[1].Outcome != SecurityOutcomeDenied ||
+		auditor.events[1].SubjectID != (uuid.UUID{}) ||
+		auditor.events[1].AccountDigest == (Digest{}) {
+		t.Fatalf("unknown recovery audit=%+v", auditor.events)
+	}
+}
+
+func TestPasswordResetAuditFailureMarksCommittedOperation(t *testing.T) {
+	token, err := NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditCause := errors.New("audit unavailable")
+	auditor := &securityAuditorStub{err: auditCause}
+	service, err := NewRecoveryService(
+		&recoveryStoreStub{consumeResult: true},
+		&recoverySenderStub{},
+		WithRecoveryAuditor(auditor),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = service.Reset(context.Background(), PasswordReset{
+		Token: token.Reveal(), NewPassword: "replacement password", Source: "192.0.2.10",
+	})
+	var auditErr *SecurityAuditError
+	if !errors.As(err, &auditErr) || !errors.Is(err, auditCause) || !auditErr.OperationApplied {
+		t.Fatalf("error=%v audit=%+v", err, auditErr)
+	}
+	if len(auditor.events) != 1 ||
+		auditor.events[0].Kind != SecurityPasswordReset ||
+		auditor.events[0].Outcome != SecurityOutcomeSucceeded ||
+		auditor.events[0].CredentialDigest != token.Digest() ||
+		auditor.events[0].SourceDigest == (Digest{}) {
+		t.Fatalf("events=%+v", auditor.events)
+	}
+}
