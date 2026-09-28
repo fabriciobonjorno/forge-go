@@ -80,6 +80,10 @@ func (event SecurityEvent) Validate() error {
 
 type SecurityAuditError struct {
 	Cause error
+	// OperationApplied is true when the security-sensitive state transition
+	// already committed and cannot safely be retried merely because audit
+	// persistence failed.
+	OperationApplied bool
 }
 
 func (e *SecurityAuditError) Error() string { return "security audit failed" }
@@ -89,6 +93,13 @@ func (e *SecurityAuditError) Unwrap() error {
 		return nil
 	}
 	return e.Cause
+}
+
+func securityAuditError(err error, operationApplied bool) error {
+	if err == nil {
+		return nil
+	}
+	return &SecurityAuditError{Cause: err, OperationApplied: operationApplied}
 }
 
 type SecurityAuditor interface {
