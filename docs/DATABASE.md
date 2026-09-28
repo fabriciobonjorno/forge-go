@@ -547,11 +547,19 @@ between framework and application migrations is an error even when the names or
 SQL differ. Set validation and collision detection happen before a database
 connection opens.
 
-For operational commands, use `migrate.CommandsFromSets` (or the
-adapter-specific equivalent when exposed by the composition root) with all
-migration filesystems. The resulting `migrate`, `migrate status`, and
-`rollback` commands operate on the same merged history and the same
-`forge_schema_migrations` table.
+For operational commands, every adapter exposes `CommandsFromSets(...fs.FS)`.
+For example, a PostgreSQL application that owns migrations and enables Forge
+identity can register:
+
+```go
+forge.Main(
+    bootstrap.Configure,
+    postgres.CommandsFromSets(db.Migrations(), authpostgres.Migrations())...,
+)
+```
+
+The resulting `migrate`, `migrate status`, and `rollback` commands operate
+on the same merged history and the same `forge_schema_migrations` table.
 
 `forge generate migration NAME` (run in the application root) creates the
 pair with the current UTC time as the version. `NAME` must match
@@ -664,8 +672,8 @@ migrations instead of refusing.
 
 Application binaries with one migration set are still built with
 `forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)`.
-Applications composing framework and application schemas should build the same
-commands from the merged migration sets instead. In both cases the binary
+Applications composing framework and application schemas use the adapter's
+`CommandsFromSets` helper instead. In both cases the binary
 accepts:
 
 | Command | Effect |
