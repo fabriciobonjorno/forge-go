@@ -48,9 +48,10 @@ type SecurityEvent struct {
 	ActorID       uuid.UUID
 	SubjectID     uuid.UUID
 	MembershipID  uuid.UUID
-	AccountDigest Digest
-	SourceDigest  Digest
-	OccurredAt    time.Time
+	AccountDigest    Digest
+	SourceDigest     Digest
+	CredentialDigest Digest
+	OccurredAt       time.Time
 }
 
 func (event SecurityEvent) Validate() error {
@@ -75,6 +76,19 @@ func (event SecurityEvent) Validate() error {
 		}
 	}
 	return nil
+}
+
+type SecurityAuditError struct {
+	Cause error
+}
+
+func (e *SecurityAuditError) Error() string { return "security audit failed" }
+
+func (e *SecurityAuditError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
 type SecurityAuditor interface {
