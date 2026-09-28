@@ -42,5 +42,12 @@ streams are later hardening concerns.
   follows the validated kind syntax.
 - The audit table is append-only by application contract, not by database-owner
   cryptographic enforcement.
-- Service-level instrumentation can be added incrementally without changing the
-  storage contract.
+- Service-level instrumentation can be added without changing the storage
+  contract; Phase 3 login, logout, recovery/reset and MFA flows use it.
+- `SecurityAuditError.OperationApplied` distinguishes an audit append failure
+  after an irreversible state transition from one that prevented a security
+  operation from completing. HTTP adapters log the former while preserving the
+  already-committed success response; they never encourage unsafe retries.
+- Login and MFA session issuance remain stricter: when a success event cannot
+  be persisted, the newly created opaque session is revoked when possible and
+  its plaintext credential is not returned.

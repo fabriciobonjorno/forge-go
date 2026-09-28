@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -318,5 +319,44 @@ func TestMFALifecycleHandlersRequireStepUp(t *testing.T) {
 	}
 	if authorized != 2 {
 		t.Fatalf("authorizer calls=%d", authorized)
+	}
+}
+
+func TestMFADisableHandlerKeepsSuccessWhenOnlyAuditFails(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	secretCipher, err := NewAESGCMSecretCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &mfaStoreStub{disabledResult: true}
+	service, err := NewMFAService(
+		store,
+		&sessionStub{},
+		secretCipher,
+		WithMFAAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := NewPrincipal(uuid.MustNew(), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewMFADisableHandler(service, MFAChangeAuthorizerFunc(func(context.Context, Principal) error {
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/auth/mfa/disable", nil)
+	request = request.WithContext(withPrincipal(request.Context(), principal))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

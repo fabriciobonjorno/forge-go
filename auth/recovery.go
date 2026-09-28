@@ -119,6 +119,7 @@ type RecoveryService struct {
 	store     RecoveryStore
 	sender    RecoverySender
 	throttler LoginThrottler
+	auditor   SecurityAuditor
 	now       func() time.Time
 	ttl       time.Duration
 }
@@ -151,6 +152,16 @@ func WithRecoveryThrottler(throttler LoginThrottler) RecoveryOption {
 			return errors.New("recovery throttler is required")
 		}
 		service.throttler = throttler
+		return nil
+	}
+}
+
+func WithRecoveryAuditor(auditor SecurityAuditor) RecoveryOption {
+	return func(service *RecoveryService) error {
+		if auditor == nil {
+			return errors.New("recovery security auditor is required")
+		}
+		service.auditor = auditor
 		return nil
 	}
 }
@@ -190,9 +201,11 @@ func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...R
 	return service, nil
 }
 
-// Request always returns nil for syntactically invalid or unknown identities,
-// so callers can give the same public response without account enumeration.
-// Infrastructure, throttling, persistence and delivery failures remain errors.
+// Request treats syntactically invalid and unknown identities as accepted
+// no-ops for public semantics. With auditing configured, an audit-persistence
+// failure may still be returned to non-HTTP callers; the HTTP adapter masks
+// that account-dependent failure as the same 202 response. Infrastructure,
+// throttling, persistence and delivery failures remain errors.
 func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) error {
 	email, tenant, ok := normalizeRecoveryIdentity(request.Email, request.TenantSlug)
 	if !ok {
@@ -205,7 +218,9 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 		return err
 	}
 	if !decision.Allowed {
-		return &RecoveryThrottledError{RetryAfter: decision.RetryAfter}
+		throttled := &RecoveryThrottledError{RetryAfter: decision.RetryAfter}
+		auditErr := s.recordRecoveryRequestEvent(ctx, SecurityOutcomeDenied, uuid.UUID{}, key, Digest{}, false)
+		return errors.Join(throttled, auditErr)
 	}
 
 	identity, found, err := s.store.LookupRecovery(ctx, email, tenant)
@@ -213,7 +228,7 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 		return err
 	}
 	if !found {
-		return nil
+		return s.recordRecoveryRequestEvent(ctx, SecurityOutcomeDenied, uuid.UUID{}, key, Digest{}, false)
 	}
 	if identity.SubjectID.Version() != 7 || identity.SubjectID.Variant() != 2 || identity.Email == "" {
 		return errors.New("recovery store returned an invalid identity")
@@ -237,9 +252,11 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recoveryCleanupTTL)
 		defer cancel()
 		invalidateErr := s.store.InvalidateRecovery(cleanupCtx, token.Digest())
-		return &RecoveryDeliveryError{Cause: errors.Join(err, invalidateErr)}
+		deliveryErr := &RecoveryDeliveryError{Cause: errors.Join(err, invalidateErr)}
+		auditErr := s.recordRecoveryRequestEvent(ctx, SecurityOutcomeFailed, identity.SubjectID, key, token.Digest(), false)
+		return errors.Join(deliveryErr, auditErr)
 	}
-	return nil
+	return s.recordRecoveryRequestEvent(ctx, SecurityOutcomeSucceeded, identity.SubjectID, key, token.Digest(), true)
 }
 
 func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error {
@@ -253,12 +270,15 @@ func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error 
 		return err
 	}
 	if !decision.Allowed {
-		return &RecoveryThrottledError{RetryAfter: decision.RetryAfter}
+		throttled := &RecoveryThrottledError{RetryAfter: decision.RetryAfter}
+		auditErr := s.recordPasswordResetEvent(ctx, SecurityOutcomeDenied, key, token.Digest(), false)
+		return errors.Join(throttled, auditErr)
 	}
 	nextHash, err := HashPassword(reset.NewPassword)
 	if err != nil {
 		if errors.Is(err, ErrPasswordRequired) || errors.Is(err, ErrPasswordTooLong) {
-			return ErrPasswordInvalid
+			auditErr := s.recordPasswordResetEvent(ctx, SecurityOutcomeDenied, key, token.Digest(), false)
+			return errors.Join(ErrPasswordInvalid, auditErr)
 		}
 		return err
 	}
@@ -267,9 +287,55 @@ func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error 
 		return err
 	}
 	if !consumed {
-		return ErrRecoveryInvalid
+		auditErr := s.recordPasswordResetEvent(ctx, SecurityOutcomeDenied, key, token.Digest(), false)
+		return errors.Join(ErrRecoveryInvalid, auditErr)
 	}
-	return nil
+	return s.recordPasswordResetEvent(ctx, SecurityOutcomeSucceeded, key, token.Digest(), true)
+}
+
+func (s *RecoveryService) recordRecoveryRequestEvent(
+	ctx context.Context,
+	outcome SecurityOutcome,
+	subjectID uuid.UUID,
+	key LoginThrottleKey,
+	credentialDigest Digest,
+	operationApplied bool,
+) error {
+	if s.auditor == nil {
+		return nil
+	}
+	event := SecurityEvent{
+		Kind:             SecurityRecoveryRequested,
+		Outcome:          outcome,
+		SubjectID:        subjectID,
+		AccountDigest:    Digest(key.Account),
+		CredentialDigest: credentialDigest,
+	}
+	if key.HasSource {
+		event.SourceDigest = Digest(key.Source)
+	}
+	return securityAuditError(s.auditor.RecordSecurityEvent(ctx, event), operationApplied)
+}
+
+func (s *RecoveryService) recordPasswordResetEvent(
+	ctx context.Context,
+	outcome SecurityOutcome,
+	key LoginThrottleKey,
+	credentialDigest Digest,
+	operationApplied bool,
+) error {
+	if s.auditor == nil {
+		return nil
+	}
+	event := SecurityEvent{
+		Kind:             SecurityPasswordReset,
+		Outcome:          outcome,
+		CredentialDigest: credentialDigest,
+	}
+	if key.HasSource {
+		event.SourceDigest = Digest(key.Source)
+	}
+	return securityAuditError(s.auditor.RecordSecurityEvent(ctx, event), operationApplied)
 }
 
 type RecoveryDeliveryError struct {

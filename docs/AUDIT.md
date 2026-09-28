@@ -55,9 +55,10 @@ should use a separate read path/role where practical.
 Audit events are not a place for debugging payloads. Use request-correlated
 application logs for detailed diagnostics and keep secrets out of both systems.
 
-This increment establishes the durable event contract. Wiring every identity
-flow to emit events is intentionally incremental, especially while recovery and
-MFA are landing on separate Phase 3 branches.
+The Phase 3 identity services now wire this contract through password login,
+logout, password recovery/reset, MFA enrollment, challenge completion, backup
+code use, factor rotation and factor disable. Application-specific identity
+operations should use the same closed event shape.
 
 See [ADR 0016](adr/0016-structured-security-audit.md).
 
@@ -89,3 +90,36 @@ returning the audit error.
 SHA-256 credential digest. Once revocation succeeds, an audit-storage failure
 is logged but does not change the idempotent `204` response: the security
 action already happened and retrying logout does not improve its result.
+
+
+## Recovery and MFA instrumentation
+
+`RecoveryService` accepts `WithRecoveryAuditor`. Recovery-request events use
+the domain-separated account/source digests already produced for throttling;
+known identities may additionally carry the subject ID, and issued links are
+represented only by their SHA-256 credential digest. Unknown identities are
+audited as denied without introducing a different public response.
+
+Password-reset attempts audit the recovery-token digest and source digest. A
+successful reset has already changed the password, incremented the credential
+version, revoked sessions and consumed recovery links before the append occurs.
+If only that audit append fails, `SecurityAuditError.OperationApplied` is true;
+the HTTP adapter logs the audit failure and still returns `204` so clients do
+not retry a reset that already committed.
+
+`MFAService` accepts `WithMFAAuditor` and emits lifecycle events for
+enrollment start/enable, rotation start/complete and disable. MFA login failures
+emit `auth.mfa.challenge_failed`; successful backup-code use emits
+`auth.mfa.backup_code_used`; a completed MFA login also emits
+`auth.login.succeeded`.
+
+A completed MFA login does not release its bearer token until required audit
+events are persisted. If a success audit append fails, Forge revokes the
+newly-created session when the session adapter supports revocation and returns
+an error instead of exposing the token.
+
+Some MFA lifecycle operations cannot be safely rolled back after the database
+transition commits, especially confirmation because backup codes are generated
+once. Those operations return their result together with a typed audit failure
+marked `OperationApplied`; the HTTP adapters log the audit failure and preserve
+the successful response, including one-time backup codes.

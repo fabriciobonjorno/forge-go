@@ -235,6 +235,7 @@ type MFAService struct {
 	sessions     CredentialSessionCreator
 	cipher       SecretCipher
 	throttler    LoginThrottler
+	auditor      SecurityAuditor
 	now          func() time.Time
 	enrollTTL    time.Duration
 	challengeTTL time.Duration
@@ -268,6 +269,16 @@ func WithMFAThrottler(throttler LoginThrottler) MFAOption {
 			return errors.New("MFA throttler is required")
 		}
 		service.throttler = throttler
+		return nil
+	}
+}
+
+func WithMFAAuditor(auditor SecurityAuditor) MFAOption {
+	return func(service *MFAService) error {
+		if auditor == nil {
+			return errors.New("MFA security auditor is required")
+		}
+		service.auditor = auditor
 		return nil
 	}
 }
@@ -365,11 +376,22 @@ func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer,
 	query.Set("digits", strconv.Itoa(totpDigits))
 	query.Set("period", strconv.Itoa(totpPeriodSeconds))
 	label := url.PathEscape(issuer + ":" + account)
-	return TOTPEnrollment{
+	enrollment := TOTPEnrollment{
 		Secret:          TOTPSecret{value: encoded},
 		ProvisioningURI: TOTPProvisioningURI{value: "otpauth://totp/" + label + "?" + query.Encode()},
 		ExpiresAt:       expiresAt,
-	}, nil
+	}
+	kind := SecurityMFAEnrollmentStarted
+	if rotation {
+		kind = SecurityMFARotationStarted
+	}
+	auditErr := s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      kind,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+	return enrollment, auditErr
 }
 
 func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
@@ -400,7 +422,14 @@ func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.U
 	if !confirmed {
 		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
-	return TOTPConfirmation{BackupCodes: backupCodes}, nil
+	confirmation := TOTPConfirmation{BackupCodes: backupCodes}
+	auditErr := s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      SecurityMFAEnabled,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+	return confirmation, auditErr
 }
 
 func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
@@ -435,7 +464,14 @@ func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUI
 	if !confirmed {
 		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
-	return TOTPConfirmation{BackupCodes: backupCodes}, nil
+	confirmation := TOTPConfirmation{BackupCodes: backupCodes}
+	auditErr := s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      SecurityMFARotated,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+	return confirmation, auditErr
 }
 
 func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID) error {
@@ -453,7 +489,19 @@ func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID) error 
 	if !disabled {
 		return ErrMFANotEnabled
 	}
-	return nil
+	return s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      SecurityMFADisabled,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+}
+
+func (s *MFAService) recordMFAEvent(ctx context.Context, event SecurityEvent, operationApplied bool) error {
+	if s.auditor == nil {
+		return nil
+	}
+	return securityAuditError(s.auditor.RecordSecurityEvent(ctx, event), operationApplied)
 }
 
 func (s *MFAService) lifecycleStore() (MFALifecycleStore, error) {
@@ -501,7 +549,9 @@ func (s *MFAService) CompleteLogin(ctx context.Context, completion MFACompletion
 		return LoginResult{}, err
 	}
 	if !decision.Allowed {
-		return LoginResult{}, &LoginThrottledError{RetryAfter: decision.RetryAfter}
+		throttled := &LoginThrottledError{RetryAfter: decision.RetryAfter}
+		auditErr := s.recordMFAChallengeFailure(ctx, MFAChallengeRecord{}, token.Digest(), key, SecurityOutcomeDenied)
+		return LoginResult{}, errors.Join(throttled, auditErr)
 	}
 
 	record, found, err := s.store.LoadMFAChallenge(ctx, token.Digest())
@@ -511,11 +561,17 @@ func (s *MFAService) CompleteLogin(ctx context.Context, completion MFACompletion
 	now := s.now().UTC()
 	if !found || record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) ||
 		record.SessionExpiresAt.IsZero() || !now.Before(record.SessionExpiresAt) {
-		return LoginResult{}, ErrMFAInvalid
+		auditErr := s.recordMFAChallengeFailure(ctx, record, token.Digest(), key, SecurityOutcomeDenied)
+		return LoginResult{}, errors.Join(ErrMFAInvalid, auditErr)
 	}
-	var membershipID uuid.UUID
-	var consumed bool
+
+	var (
+		membershipID uuid.UUID
+		consumed     bool
+		usedBackup   bool
+	)
 	if backupDigest, backup := parseMFABackupCode(completion.Code); backup {
+		usedBackup = true
 		membershipID, consumed, err = s.store.ConsumeMFABackupChallenge(ctx, token.Digest(), backupDigest)
 		if err != nil {
 			return LoginResult{}, err
@@ -523,11 +579,13 @@ func (s *MFAService) CompleteLogin(ctx context.Context, completion MFACompletion
 	} else {
 		secret, err := s.openTOTPSecret(record.SecretCiphertext, record.SecretDigest)
 		if err != nil {
-			return LoginResult{}, err
+			auditErr := s.recordMFAChallengeFailure(ctx, record, token.Digest(), key, SecurityOutcomeFailed)
+			return LoginResult{}, errors.Join(err, auditErr)
 		}
 		counter, ok := matchTOTPCounter(secret, completion.Code, now, record.LastCounter)
 		if !ok {
-			return LoginResult{}, ErrMFAInvalid
+			auditErr := s.recordMFAChallengeFailure(ctx, record, token.Digest(), key, SecurityOutcomeDenied)
+			return LoginResult{}, errors.Join(ErrMFAInvalid, auditErr)
 		}
 		membershipID, consumed, err = s.store.ConsumeMFAChallenge(ctx, token.Digest(), record.SecretDigest, counter)
 		if err != nil {
@@ -535,17 +593,81 @@ func (s *MFAService) CompleteLogin(ctx context.Context, completion MFACompletion
 		}
 	}
 	if !consumed {
-		return LoginResult{}, ErrMFAInvalid
+		auditErr := s.recordMFAChallengeFailure(ctx, record, token.Digest(), key, SecurityOutcomeDenied)
+		return LoginResult{}, errors.Join(ErrMFAInvalid, auditErr)
 	}
 	if err := s.throttler.Success(ctx, key); err != nil {
 		return LoginResult{}, err
 	}
+
 	expiresAt := record.SessionExpiresAt.UTC()
 	session, err := s.sessions.CreateSessionAtVersion(ctx, membershipID, record.CredentialVersion, expiresAt)
 	if err != nil {
 		return LoginResult{}, err
 	}
+
+	if usedBackup {
+		event := SecurityEvent{
+			Kind:             SecurityMFABackupCodeUsed,
+			Outcome:          SecurityOutcomeSucceeded,
+			ActorID:          record.SubjectID,
+			SubjectID:        record.SubjectID,
+			MembershipID:     membershipID,
+			CredentialDigest: token.Digest(),
+		}
+		if key.HasSource {
+			event.SourceDigest = Digest(key.Source)
+		}
+		if auditErr := s.recordMFAEvent(ctx, event, false); auditErr != nil {
+			return LoginResult{}, s.rejectMFASessionAfterAuditFailure(ctx, session, auditErr)
+		}
+	}
+
+	loginEvent := SecurityEvent{
+		Kind:             SecurityLoginSucceeded,
+		Outcome:          SecurityOutcomeSucceeded,
+		SubjectID:        record.SubjectID,
+		MembershipID:     membershipID,
+		CredentialDigest: session.Digest(),
+	}
+	if key.HasSource {
+		loginEvent.SourceDigest = Digest(key.Source)
+	}
+	if auditErr := s.recordMFAEvent(ctx, loginEvent, false); auditErr != nil {
+		return LoginResult{}, s.rejectMFASessionAfterAuditFailure(ctx, session, auditErr)
+	}
+
 	return LoginResult{Token: session, ExpiresAt: expiresAt}, nil
+}
+
+func (s *MFAService) recordMFAChallengeFailure(
+	ctx context.Context,
+	record MFAChallengeRecord,
+	challengeDigest Digest,
+	key LoginThrottleKey,
+	outcome SecurityOutcome,
+) error {
+	event := SecurityEvent{
+		Kind:             SecurityMFAChallengeFailed,
+		Outcome:          outcome,
+		SubjectID:        record.SubjectID,
+		MembershipID:     record.MembershipID,
+		CredentialDigest: challengeDigest,
+	}
+	if key.HasSource {
+		event.SourceDigest = Digest(key.Source)
+	}
+	return s.recordMFAEvent(ctx, event, false)
+}
+
+func (s *MFAService) rejectMFASessionAfterAuditFailure(ctx context.Context, session Token, auditErr error) error {
+	if auditErr == nil {
+		return nil
+	}
+	if revoker, ok := s.sessions.(SessionRevoker); ok {
+		return errors.Join(auditErr, revoker.RevokeSession(ctx, session))
+	}
+	return auditErr
 }
 
 func (s *MFAService) openTOTPSecret(ciphertext []byte, wantDigest Digest) ([]byte, error) {
