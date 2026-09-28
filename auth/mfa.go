@@ -112,7 +112,8 @@ func (c *AESGCMSecretCipher) Seal(plaintext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return c.aead.Seal(nonce, nonce, plaintext, nil), nil
+	sealed := append([]byte(nil), nonce...)
+	return c.aead.Seal(sealed, nonce, plaintext, nil), nil
 }
 
 func (c *AESGCMSecretCipher) Open(ciphertext []byte) ([]byte, error) {
