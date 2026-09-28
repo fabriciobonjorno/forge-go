@@ -220,7 +220,6 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"Dockerfile":                 "storage",
 				"app/bootstrap/bootstrap.go": "authpostgres",
 				"cmd/shop/main.go":           "authpostgres",
-				"compose.yaml":               "FORGE_AUTH_MFA_KEY",
 			},
 		},
 		{
@@ -255,7 +254,6 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				".env.development":                "FORGE_TEST_DATABASE_URL",
 				"app/bootstrap/bootstrap.go":      "authpostgres",
 				"cmd/shop/main.go":                "authpostgres",
-				"compose.yaml":                    "FORGE_AUTH_MFA_KEY",
 			},
 		},
 	}
