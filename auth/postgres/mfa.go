@@ -47,6 +47,17 @@ func (r *Repository) BeginTOTPEnrollment(
 		if err != nil {
 			return postgres.Translate(err)
 		}
+		var alreadyEnabled bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM forge_totp_factors WHERE user_id = $1
+			)
+		`, subjectID).Scan(&alreadyEnabled); err != nil {
+			return postgres.Translate(err)
+		}
+		if alreadyEnabled {
+			return auth.ErrMFAAlreadyEnabled
+		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO forge_totp_enrollments
 				(user_id, secret_digest, secret_ciphertext, expires_at, created_at)
