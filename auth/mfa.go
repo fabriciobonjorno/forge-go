@@ -225,6 +225,7 @@ type MFAService struct {
 	sessions     CredentialSessionCreator
 	cipher       SecretCipher
 	throttler    LoginThrottler
+	auditor      SecurityAuditor
 	now          func() time.Time
 	enrollTTL    time.Duration
 	challengeTTL time.Duration
@@ -258,6 +259,16 @@ func WithMFAThrottler(throttler LoginThrottler) MFAOption {
 			return errors.New("MFA throttler is required")
 		}
 		service.throttler = throttler
+		return nil
+	}
+}
+
+func WithMFAAuditor(auditor SecurityAuditor) MFAOption {
+	return func(service *MFAService) error {
+		if auditor == nil {
+			return errors.New("MFA security auditor is required")
+		}
+		service.auditor = auditor
 		return nil
 	}
 }
@@ -348,11 +359,22 @@ func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer,
 	query.Set("digits", strconv.Itoa(totpDigits))
 	query.Set("period", strconv.Itoa(totpPeriodSeconds))
 	label := url.PathEscape(issuer + ":" + account)
-	return TOTPEnrollment{
+	enrollment := TOTPEnrollment{
 		Secret:          TOTPSecret{value: encoded},
 		ProvisioningURI: TOTPProvisioningURI{value: "otpauth://totp/" + label + "?" + query.Encode()},
 		ExpiresAt:       expiresAt,
-	}, nil
+	}
+	kind := SecurityMFAEnrollmentStarted
+	if rotation {
+		kind = SecurityMFARotationStarted
+	}
+	auditErr := s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      kind,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+	return enrollment, auditErr
 }
 
 func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
@@ -383,7 +405,14 @@ func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.U
 	if !confirmed {
 		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
-	return TOTPConfirmation{BackupCodes: backupCodes}, nil
+	confirmation := TOTPConfirmation{BackupCodes: backupCodes}
+	auditErr := s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      SecurityMFAEnabled,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+	return confirmation, auditErr
 }
 
 func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
@@ -418,7 +447,14 @@ func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUI
 	if !confirmed {
 		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
-	return TOTPConfirmation{BackupCodes: backupCodes}, nil
+	confirmation := TOTPConfirmation{BackupCodes: backupCodes}
+	auditErr := s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      SecurityMFARotated,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+	return confirmation, auditErr
 }
 
 func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID) error {
@@ -436,7 +472,19 @@ func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID) error 
 	if !disabled {
 		return ErrMFANotEnabled
 	}
-	return nil
+	return s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      SecurityMFADisabled,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+}
+
+func (s *MFAService) recordMFAEvent(ctx context.Context, event SecurityEvent, operationApplied bool) error {
+	if s.auditor == nil {
+		return nil
+	}
+	return securityAuditError(s.auditor.RecordSecurityEvent(ctx, event), operationApplied)
 }
 
 func (s *MFAService) lifecycleStore() (MFALifecycleStore, error) {
