@@ -20,9 +20,12 @@ tenant+account and source hashes. Reset attempts are also throttled by
 domain-separated token and source hashes before password hashing.
 
 `RecoverySender` implementations should enqueue delivery and return promptly
-rather than perform slow SMTP or other network delivery inline. This keeps the
-public request path from gaining an obvious account-existence timing signal.
-The framework deliberately does not choose an email provider.
+rather than perform slow SMTP or other network delivery inline. Delivery
+failures are surfaced to non-HTTP callers as a typed error, but the public
+recovery-request handler deliberately masks them as the normal accepted
+response and invalidates the undelivered token. This prevents a provider outage
+from becoming an account-existence oracle. The framework deliberately does not
+choose an email provider.
 
 The PostgreSQL adapter stores recovery rows in
 `forge_password_recovery`. Creating a new recovery token serializes on the
