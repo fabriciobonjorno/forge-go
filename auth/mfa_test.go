@@ -318,7 +318,14 @@ func TestMFACompletionConsumesChallengeBeforeCreatingSession(t *testing.T) {
 		consumeMembership: membershipID,
 	}
 	sessions := &sessionStub{token: sessionToken}
-	service, err := NewMFAService(store, sessions, secretCipher, WithMFAClock(func() time.Time { return now }))
+	auditor := &securityAuditorStub{}
+	service, err := NewMFAService(
+		store,
+		sessions,
+		secretCipher,
+		WithMFAClock(func() time.Time { return now }),
+		WithMFAAuditor(auditor),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,6 +346,14 @@ func TestMFACompletionConsumesChallengeBeforeCreatingSession(t *testing.T) {
 	}
 	if result.Token.Digest() != sessionToken.Digest() || !result.ExpiresAt.Equal(now.Add(12*time.Hour)) {
 		t.Fatalf("result=%+v", result)
+	}
+	if len(auditor.events) != 1 ||
+		auditor.events[0].Kind != SecurityLoginSucceeded ||
+		auditor.events[0].Outcome != SecurityOutcomeSucceeded ||
+		auditor.events[0].MembershipID != membershipID ||
+		auditor.events[0].CredentialDigest != sessionToken.Digest() ||
+		auditor.events[0].SourceDigest == (Digest{}) {
+		t.Fatalf("events=%+v", auditor.events)
 	}
 }
 
@@ -371,7 +386,14 @@ func TestMFACompletionFailsClosedOnConsumeRace(t *testing.T) {
 		consumeResult: false,
 	}
 	sessions := &sessionStub{}
-	service, err := NewMFAService(store, sessions, secretCipher, WithMFAClock(func() time.Time { return now }))
+	auditor := &securityAuditorStub{}
+	service, err := NewMFAService(
+		store,
+		sessions,
+		secretCipher,
+		WithMFAClock(func() time.Time { return now }),
+		WithMFAAuditor(auditor),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,6 +404,12 @@ func TestMFACompletionFailsClosedOnConsumeRace(t *testing.T) {
 	}
 	if sessions.membership != (uuid.UUID{}) {
 		t.Fatal("session created after MFA consume race")
+	}
+	if len(auditor.events) != 1 ||
+		auditor.events[0].Kind != SecurityMFAChallengeFailed ||
+		auditor.events[0].Outcome != SecurityOutcomeDenied ||
+		auditor.events[0].CredentialDigest != challengeToken.Digest() {
+		t.Fatalf("events=%+v", auditor.events)
 	}
 }
 
@@ -444,5 +472,142 @@ func TestMFADisableFailsWhenNotEnabled(t *testing.T) {
 	}
 	if err := service.DisableMFA(context.Background(), uuid.MustNew()); !errors.Is(err, ErrMFANotEnabled) {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+
+func TestMFACompletionRevokesSessionWhenSuccessAuditFails(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	secretCipher, err := NewAESGCMSecretCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("12345678901234567890")
+	sealed, err := secretCipher.Seal(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := NewMFAChallengeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionToken, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 27, 21, 30, 0, 0, time.UTC)
+	membershipID := uuid.MustNew()
+	store := &mfaStoreStub{
+		challengeFound: true,
+		challenge: MFAChallengeRecord{
+			SubjectID:         uuid.MustNew(),
+			MembershipID:      membershipID,
+			CredentialVersion: 4,
+			SecretDigest:      sha256.Sum256(secret),
+			SecretCiphertext:  sealed,
+			LastCounter:       -1,
+			ExpiresAt:         now.Add(5 * time.Minute),
+			SessionExpiresAt:  now.Add(time.Hour),
+		},
+		consumeResult:     true,
+		consumeMembership: membershipID,
+	}
+	sessions := &revokingSessionStub{sessionStub: sessionStub{token: sessionToken}}
+	auditCause := errors.New("audit unavailable")
+	service, err := NewMFAService(
+		store,
+		sessions,
+		secretCipher,
+		WithMFAClock(func() time.Time { return now }),
+		WithMFAAuditor(&securityAuditorStub{err: auditCause}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := totpCode(secret, uint64(now.Unix()/totpPeriodSeconds))
+	result, err := service.CompleteLogin(context.Background(), MFACompletion{
+		ChallengeToken: challenge.Reveal(),
+		Code:           code,
+		Source:         "192.0.2.10",
+	})
+	if !errors.Is(err, auditCause) {
+		t.Fatalf("error=%v", err)
+	}
+	if result.Token != (Token{}) {
+		t.Fatalf("token delivered despite audit failure: %v", result.Token)
+	}
+	if sessions.revoked.Digest() != sessionToken.Digest() {
+		t.Fatalf("revoked=%v want=%x", sessions.revoked, sessionToken.Digest())
+	}
+}
+
+func TestMFAFactorLifecycleAuditsCommittedChanges(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	secretCipher, err := NewAESGCMSecretCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 27, 22, 0, 0, 0, time.UTC)
+	subjectID := uuid.MustNew()
+	store := &mfaStoreStub{
+		confirmResult:         true,
+		rotationConfirmResult: true,
+		disabledResult:        true,
+	}
+	auditor := &securityAuditorStub{}
+	service, err := NewMFAService(
+		store,
+		&sessionStub{},
+		secretCipher,
+		WithMFAClock(func() time.Time { return now }),
+		WithMFAAuditor(auditor),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enrollment, err := service.BeginTOTPEnrollment(context.Background(), subjectID, "Forge", "alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(enrollment.Secret.Reveal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConfirmTOTPEnrollment(context.Background(), subjectID, totpCode(raw, uint64(now.Unix()/totpPeriodSeconds))); err != nil {
+		t.Fatal(err)
+	}
+
+	rotation, err := service.BeginTOTPRotation(context.Background(), subjectID, "Forge", "alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawRotation, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(rotation.Secret.Reveal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConfirmTOTPRotation(context.Background(), subjectID, totpCode(rawRotation, uint64(now.Unix()/totpPeriodSeconds))); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DisableMFA(context.Background(), subjectID); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []SecurityEventKind{
+		SecurityMFAEnrollmentStarted,
+		SecurityMFAEnabled,
+		SecurityMFARotationStarted,
+		SecurityMFARotated,
+		SecurityMFADisabled,
+	}
+	if len(auditor.events) != len(want) {
+		t.Fatalf("events=%+v", auditor.events)
+	}
+	for index, kind := range want {
+		event := auditor.events[index]
+		if event.Kind != kind || event.Outcome != SecurityOutcomeSucceeded ||
+			event.SubjectID != subjectID || event.ActorID != subjectID {
+			t.Fatalf("event[%d]=%+v want kind=%s", index, event, kind)
+		}
 	}
 }
