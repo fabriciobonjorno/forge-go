@@ -189,7 +189,6 @@ func TestTOTPEnrollmentHandlerRequiresExplicitStepUp(t *testing.T) {
 	}
 }
 
-
 func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	secretCipher, err := NewAESGCMSecretCipher(key)
@@ -256,5 +255,69 @@ func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 		if _, ok := parseMFABackupCode(backupCode); !ok {
 			t.Fatalf("invalid backup code in HTTP response: %q", backupCode)
 		}
+	}
+}
+
+
+func TestMFALifecycleHandlersRequireStepUp(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	secretCipher, err := NewAESGCMSecretCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &mfaStoreStub{disabledResult: true}
+	service, err := NewMFAService(store, &sessionStub{}, secretCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewTOTPRotationHandler(service, "Forge", nil); err == nil {
+		t.Fatal("nil rotation authorizer was accepted")
+	}
+	if _, err := NewMFADisableHandler(service, nil); err == nil {
+		t.Fatal("nil disable authorizer was accepted")
+	}
+
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := NewPrincipal(uuid.MustNew(), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorized := 0
+	authorizer := MFAChangeAuthorizerFunc(func(_ context.Context, got Principal) error {
+		authorized++
+		if got.SubjectID() != principal.SubjectID() {
+			t.Fatalf("subject=%s", got.SubjectID())
+		}
+		return nil
+	})
+
+	rotation, err := NewTOTPRotationHandler(service, "Forge", authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotateRequest := httptest.NewRequest(http.MethodPost, "/auth/mfa/totp/rotate", nil)
+	rotateRequest = rotateRequest.WithContext(withPrincipal(rotateRequest.Context(), principal))
+	rotateRecorder := httptest.NewRecorder()
+	rotation.ServeHTTP(rotateRecorder, rotateRequest)
+	if rotateRecorder.Code != http.StatusOK || !store.rotationStarted {
+		t.Fatalf("rotation status=%d started=%v body=%s", rotateRecorder.Code, store.rotationStarted, rotateRecorder.Body.String())
+	}
+
+	disable, err := NewMFADisableHandler(service, authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disableRequest := httptest.NewRequest(http.MethodPost, "/auth/mfa/disable", nil)
+	disableRequest = disableRequest.WithContext(withPrincipal(disableRequest.Context(), principal))
+	disableRecorder := httptest.NewRecorder()
+	disable.ServeHTTP(disableRecorder, disableRequest)
+	if disableRecorder.Code != http.StatusNoContent {
+		t.Fatalf("disable status=%d body=%s", disableRecorder.Code, disableRecorder.Body.String())
+	}
+	if authorized != 2 {
+		t.Fatalf("authorizer calls=%d", authorized)
 	}
 }
