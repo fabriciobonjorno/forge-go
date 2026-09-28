@@ -104,9 +104,13 @@ func (r *Repository) ConfirmTOTPEnrollment(
 	subjectID uuid.UUID,
 	secretDigest auth.Digest,
 	counter int64,
+	backupCodeDigests []auth.Digest,
 ) (bool, error) {
 	if counter < 0 {
 		return false, errors.New("TOTP counter must be non-negative")
+	}
+	if len(backupCodeDigests) != auth.DefaultMFABackupCodeCount {
+		return false, errors.New("TOTP confirmation requires the default MFA backup code set")
 	}
 	confirmed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
@@ -148,6 +152,20 @@ func (r *Repository) ConfirmTOTPEnrollment(
 		}
 		if tag.RowsAffected() != 1 {
 			return errors.New("TOTP factor was not created while enrollment was locked")
+		}
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM forge_mfa_backup_codes
+			WHERE user_id = $1
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		for _, backupDigest := range backupCodeDigests {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO forge_mfa_backup_codes (user_id, code_digest)
+				VALUES ($1, $2)
+			`, subjectID, backupDigest[:]); err != nil {
+				return postgres.Translate(err)
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE forge_users
@@ -377,6 +395,80 @@ func (r *Repository) ConsumeMFAChallenge(
 		}
 		if tag.RowsAffected() != 1 {
 			return errors.New("TOTP replay watermark changed while factor was locked")
+		}
+		tag, err = tx.Exec(ctx, `
+			UPDATE forge_mfa_challenges
+			SET consumed_at = now()
+			WHERE token_digest = $1
+			  AND consumed_at IS NULL
+		`, digest[:])
+		if err != nil {
+			return postgres.Translate(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("MFA challenge changed while it was locked")
+		}
+		consumed = true
+		return nil
+	})
+	if err != nil || !consumed {
+		return uuid.UUID{}, consumed, err
+	}
+	return membershipID, true, nil
+}
+
+func (r *Repository) ConsumeMFABackupChallenge(
+	ctx context.Context,
+	digest auth.Digest,
+	backupCodeDigest auth.Digest,
+) (uuid.UUID, bool, error) {
+	var membershipID uuid.UUID
+	consumed := false
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var backupID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT m.id, b.id
+			FROM forge_mfa_challenges c
+			JOIN forge_memberships m ON m.id = c.membership_id
+			JOIN forge_users u ON u.id = m.user_id
+			JOIN forge_tenants t ON t.id = m.tenant_id
+			JOIN forge_organizations o ON o.id = t.organization_id
+			JOIN forge_totp_factors f
+			  ON f.user_id = u.id
+			 AND f.secret_digest = c.factor_secret_digest
+			JOIN forge_mfa_backup_codes b
+			  ON b.user_id = u.id
+			 AND b.code_digest = $2
+			 AND b.consumed_at IS NULL
+			WHERE c.token_digest = $1
+			  AND c.consumed_at IS NULL
+			  AND c.expires_at > now()
+			  AND c.session_expires_at > now()
+			  AND c.credential_version = u.session_version
+			  AND m.status = 'active'
+			  AND u.status = 'active'
+			  AND t.status = 'active'
+			  AND o.status = 'active'
+			FOR UPDATE OF c, m, u, f, b
+		`, digest[:], backupCodeDigest[:]).Scan(&membershipID, &backupID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return postgres.Translate(err)
+		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE forge_mfa_backup_codes
+			SET consumed_at = now()
+			WHERE id = $1
+			  AND consumed_at IS NULL
+		`, backupID)
+		if err != nil {
+			return postgres.Translate(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("MFA backup code changed while it was locked")
 		}
 		tag, err = tx.Exec(ctx, `
 			UPDATE forge_mfa_challenges
