@@ -2,8 +2,12 @@ package postgres_test
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/base32"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
