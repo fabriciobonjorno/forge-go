@@ -3,10 +3,13 @@ package auth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/fabriciobonjorno/forge-go/uuid"
 )
 
 func TestPasswordRecoveryRequestHandlerIsUniform(t *testing.T) {
@@ -100,5 +103,34 @@ func TestPasswordResetHandlerConsumesToken(t *testing.T) {
 	handler.ServeHTTP(badRecorder, bad)
 	if badRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("bad status=%d body=%s", badRecorder.Code, badRecorder.Body.String())
+	}
+}
+
+
+func TestPasswordRecoveryRequestHandlerMasksDeliveryFailure(t *testing.T) {
+	store := &recoveryStoreStub{
+		found: true,
+		identity: RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "alice@example.com"},
+	}
+	sender := &recoverySenderStub{err: errors.New("mailer unavailable")}
+	service, err := NewRecoveryService(store, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewPasswordRecoveryRequestHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/auth/recovery", bytes.NewBufferString(`{"email":"alice@example.com","tenant":"acme"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if store.invalidated == (Digest{}) || store.invalidated != store.createdDigest {
+		t.Fatalf("created=%x invalidated=%x", store.createdDigest, store.invalidated)
 	}
 }
