@@ -50,7 +50,6 @@ func TestLoadMigrationsRejectsMistakes(t *testing.T) {
 	}
 }
 
-
 func TestLoadMigrationSetsMergesAndSorts(t *testing.T) {
 	t.Parallel()
 	framework := fstest.MapFS{
