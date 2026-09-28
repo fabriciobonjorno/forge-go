@@ -39,6 +39,7 @@ const (
 var (
 	ErrMFAInvalid           = fault.New("mfa_invalid", "multi-factor code or challenge is invalid or expired", fault.CategoryUnauthorized, 0)
 	ErrMFAEnrollmentInvalid = fault.New("mfa_enrollment_invalid", "MFA enrollment is invalid or expired", fault.CategoryInvalid, 0)
+	ErrMFAAlreadyEnabled    = fault.New("mfa_already_enabled", "MFA is already enabled", fault.CategoryConflict, 0)
 )
 
 type MFAChallengeToken struct {
