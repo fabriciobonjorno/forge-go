@@ -177,6 +177,20 @@ func RequireCSRF(next http.Handler) (http.Handler, error) {
 // both browser credentials. Unknown or already-revoked syntactically valid
 // sessions remain idempotent at the repository layer.
 func NewCookieLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
+	return newCookieLogoutHandler(revoker, nil)
+}
+
+// NewAuditedCookieLogoutHandler is NewCookieLogoutHandler with structured
+// security audit. Audit failures are logged without undoing a successful
+// revocation or changing the idempotent 204 response.
+func NewAuditedCookieLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newCookieLogoutHandler(revoker, auditor)
+}
+
+func newCookieLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
 	if revoker == nil {
 		return nil, errors.New("session revoker is required")
 	}
@@ -188,6 +202,19 @@ func NewCookieLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
 				if err := revoker.RevokeSession(r.Context(), token); err != nil {
 					web.Error(w, r, err)
 					return
+				}
+				if auditor != nil {
+					if err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+						Kind:             SecuritySessionRevoked,
+						Outcome:          SecurityOutcomeSucceeded,
+						CredentialDigest: token.Digest(),
+					}); err != nil {
+						web.Logger(r.Context()).Error("security audit failed",
+							"method", r.Method,
+							"path", r.URL.Path,
+							"error", err,
+						)
+					}
 				}
 			}
 		}

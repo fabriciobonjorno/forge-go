@@ -9,14 +9,15 @@ the Go standard library; each database adapter adds its driver.
 
 Pre-release. Phases 1 (core runtime, configuration, CLI, lifecycle, HTTP) and
 2 (databases, migrations, transactions, repositories) are implemented,
-including support for several databases. Phase 3 has a first, intentionally
-bounded identity and tenancy foundation. APIs may change without notice until
-a tagged release.
+including support for several databases. Phase 3 provides an identity and
+tenancy foundation with PostgreSQL persistence, password and browser-session
+flows, recovery and MFA primitives, and security auditing. Its remaining
+scope and adapter boundaries are listed in the roadmap. APIs may change
+without notice until a tagged release.
 
-Not implemented yet: password/login flows and a concrete identity store,
-browser sessions/MFA, generated identity schemas, background jobs,
-OpenTelemetry, OpenAPI, and resource code generation. See
-[docs/ROADMAP.md](docs/ROADMAP.md).
+Still planned: background jobs, OpenTelemetry, OpenAPI, resource code
+generation, performance work, and security hardening. See
+[docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 
 ## Packages
 

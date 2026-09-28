@@ -155,10 +155,13 @@ See [ADR 0015](adr/0015-mfa-factor-lifecycle.md).
 
 ## Remaining MFA work
 
-Still required before Phase 3 identity can be considered complete:
+Generated PostgreSQL applications wire the challenge-completion flow when
+`FORGE_AUTH_MFA_KEY` is configured and pass the repository as the MFA auditor.
+Enrollment and rotation handlers are intentionally not registered by the
+scaffold: applications must supply their own step-up authorization policy.
 
-- generated application wiring and encryption-key configuration;
-- audit instrumentation for enrollment, factor changes, MFA failures and
-  recovery flows.
+Recovery delivery is also application-specific and uses the separate recovery
+service and sender interface. When composing these services manually, configure
+the security auditor explicitly.
 
 See also [ADR 0014](adr/0014-totp-mfa.md).

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -251,6 +252,42 @@ func TestCookieLogoutRequiresCSRFRevokesAndClearsCookies(t *testing.T) {
 	handler.ServeHTTP(missingRecorder, missingCSRF)
 	if missingRecorder.Code != http.StatusForbidden {
 		t.Fatalf("missing CSRF status=%d body=%s", missingRecorder.Code, missingRecorder.Body.String())
+	}
+}
+
+func TestAuditedCookieLogoutRecordsCredentialDigestAndStaysIdempotent(t *testing.T) {
+	sessionToken, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrfToken, err := newCSRFToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, auditErr := range []error{nil, errors.New("audit unavailable")} {
+		revoker := &revokeStub{}
+		auditor := &securityAuditorStub{err: auditErr}
+		handler, err := NewAuditedCookieLogoutHandler(revoker, auditor)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		request := httptest.NewRequest(http.MethodPost, "https://app.example.com/auth/logout", nil)
+		request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sessionToken.Reveal()})
+		request.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfToken})
+		request.Header.Set(CSRFHeaderName, csrfToken)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusNoContent || revoker.token.Digest() != sessionToken.Digest() {
+			t.Fatalf("audit err=%v status=%d revoked=%v body=%s", auditErr, recorder.Code, revoker.token, recorder.Body.String())
+		}
+		if len(auditor.events) != 1 ||
+			auditor.events[0].Kind != SecuritySessionRevoked ||
+			auditor.events[0].Outcome != SecurityOutcomeSucceeded ||
+			auditor.events[0].CredentialDigest != sessionToken.Digest() {
+			t.Fatalf("audit err=%v events=%+v", auditErr, auditor.events)
+		}
 	}
 }
 

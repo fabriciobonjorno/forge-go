@@ -21,6 +21,11 @@ database-enforced tenant isolation.
 - Tokens are revocable server-side and contain no authorization claims.
 - Database compromise exposes digests rather than usable bearer values.
 - Every tenant-owned PostgreSQL operation needs a transaction, even a read.
-- Applications must provide session persistence and their identity schema.
+- PostgreSQL is the only built-in identity persistence adapter. Applications
+  using other adapters can implement the auth ports, but must not assume a
+  database-level isolation guarantee.
 - Browser cookie sessions, CSRF, password authentication, MFA, and recovery
-  require a later, separately threat-modeled increment.
+  are provided as explicit framework APIs; generated applications wire only
+  the default bearer login/logout/session flow and optional MFA completion.
+- MySQL, MariaDB, and SQLite use application-layer tenant scoping as described
+  in `MULTI_TENANCY.md`; this is weaker than PostgreSQL RLS.

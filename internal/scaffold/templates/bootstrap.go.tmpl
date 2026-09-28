@@ -79,7 +79,13 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 		if err != nil {
 			return err
 		}
-		mfa, err := auth.NewMFAService(repository, repository, cipher, auth.WithMFAThrottler(mfaThrottler))
+		mfa, err := auth.NewMFAService(
+			repository,
+			repository,
+			cipher,
+			auth.WithMFAThrottler(mfaThrottler),
+			auth.WithMFAAuditor(repository),
+		)
 		if err != nil {
 			return err
 		}
