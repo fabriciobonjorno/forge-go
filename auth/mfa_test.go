@@ -13,21 +13,21 @@ import (
 )
 
 type mfaStoreStub struct {
-	pending              TOTPSecretRecord
-	pendingFound         bool
-	confirmResult        bool
-	confirmCounter       int64
-	challenge            MFAChallengeRecord
-	challengeFound       bool
-	consumeResult        bool
-	consumeMembership    uuid.UUID
-	consumeCounter       int64
-	createdChallenge     Digest
+	pending                  TOTPSecretRecord
+	pendingFound             bool
+	confirmResult            bool
+	confirmCounter           int64
+	challenge                MFAChallengeRecord
+	challengeFound           bool
+	consumeResult            bool
+	consumeMembership        uuid.UUID
+	consumeCounter           int64
+	createdChallenge         Digest
 	createdMembership        uuid.UUID
 	createdCredentialVersion int64
 	createdExpiresAt         time.Time
 	createdSessionExpiry     time.Time
-	err                  error
+	err                      error
 }
 
 func (s *mfaStoreStub) BeginTOTPEnrollment(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time) error {
@@ -36,7 +36,7 @@ func (s *mfaStoreStub) BeginTOTPEnrollment(_ context.Context, subjectID uuid.UUI
 	}
 	s.pending = TOTPSecretRecord{
 		SubjectID:        subjectID,
-		SecretDigest:     digest,
+		SecretDigest:      digest,
 		SecretCiphertext: append([]byte(nil), ciphertext...),
 		ExpiresAt:        expiresAt,
 	}
@@ -260,11 +260,11 @@ func TestMFACompletionConsumesChallengeBeforeCreatingSession(t *testing.T) {
 			SubjectID:        uuid.MustNew(),
 			MembershipID:      membershipID,
 			CredentialVersion: 1,
-			SecretDigest:     digest,
-			SecretCiphertext: sealed,
-			LastCounter:      -1,
-			ExpiresAt:        now.Add(5 * time.Minute),
-			SessionExpiresAt: now.Add(12 * time.Hour),
+			SecretDigest:      digest,
+			SecretCiphertext:  sealed,
+			LastCounter:       -1,
+			ExpiresAt:         now.Add(5 * time.Minute),
+			SessionExpiresAt:  now.Add(12 * time.Hour),
 		},
 		consumeResult:     true,
 		consumeMembership: membershipID,
@@ -314,11 +314,11 @@ func TestMFACompletionFailsClosedOnConsumeRace(t *testing.T) {
 			SubjectID:        uuid.MustNew(),
 			MembershipID:      uuid.MustNew(),
 			CredentialVersion: 1,
-			SecretDigest:     digest,
-			SecretCiphertext: sealed,
-			LastCounter:      -1,
-			ExpiresAt:        now.Add(5 * time.Minute),
-			SessionExpiresAt: now.Add(time.Hour),
+			SecretDigest:      digest,
+			SecretCiphertext:  sealed,
+			LastCounter:       -1,
+			ExpiresAt:         now.Add(5 * time.Minute),
+			SessionExpiresAt:  now.Add(time.Hour),
 		},
 		consumeResult: false,
 	}
@@ -336,7 +336,6 @@ func TestMFACompletionFailsClosedOnConsumeRace(t *testing.T) {
 		t.Fatal("session created after MFA consume race")
 	}
 }
-
 
 func FuzzParseMFAChallengeTokenNeverPanics(f *testing.F) {
 	for _, seed := range []string{"", "x", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
