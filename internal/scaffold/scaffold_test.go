@@ -56,9 +56,20 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		"go.mod":           {"module example.com/acme/billing"},
 		"cmd/billing-api/main.go": {
 			`"example.com/acme/billing/app/bootstrap"`,
-			"forge.Main(bootstrap.Configure, postgres.Commands(db.Migrations())...)",
+			`authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"`,
+			"postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations())",
 		},
-		"app/bootstrap/bootstrap.go": {"postgres.Open(ctx, app.Config().Database)", `app.Readiness("database", database.Ping)`},
+		"app/bootstrap/bootstrap.go": {
+			"postgres.Open(ctx, app.Config().Database)",
+			`app.Readiness("database", database.Ping)`,
+			"authpostgres.New(database)",
+			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
+			"auth.NewLoginService(",
+			"auth.WithSecurityAuditor(repository)",
+			`app.Handle("POST /auth/login", loginHandler)`,
+			`app.Handle("POST /auth/logout", logoutHandler)`,
+			`app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))`,
+		},
 		"db/db.go":                   {"//go:embed all:migrations"},
 		".github/workflows/ci.yml":   {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", `FORGE_TEST_REQUIRE_DATABASE: "true"`},
 	})
@@ -192,7 +203,12 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                       {"MySQL 8.4", "`tls=true`"},
 			},
-			forbidden: map[string]string{"compose.yaml": "postgres", "Dockerfile": "storage"},
+			forbidden: map[string]string{
+				"compose.yaml":               "postgres",
+				"Dockerfile":                 "storage",
+				"app/bootstrap/bootstrap.go": "authpostgres",
+				"cmd/shop/main.go":           "authpostgres",
+			},
 		},
 		{
 			database: "mariadb",
@@ -202,7 +218,11 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				".github/workflows/ci.yml": {"image: mariadb:11.8", "healthcheck.sh --connect --innodb_initialized"},
 				"README.md":                {"MariaDB 11.8"},
 			},
-			forbidden: map[string]string{"compose.yaml": "mysql:8.4"},
+			forbidden: map[string]string{
+				"compose.yaml":               "mysql:8.4",
+				"app/bootstrap/bootstrap.go": "authpostgres",
+				"cmd/shop/main.go":           "authpostgres",
+			},
 		},
 		{
 			database: "sqlite3", // alias
@@ -216,9 +236,11 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"app/bootstrap/bootstrap_test.go": {"sqlitetest.Config(t)"},
 			},
 			forbidden: map[string]string{
-				"compose.yaml":             "image:",
-				".github/workflows/ci.yml": "services:",
-				".env.development":         "FORGE_TEST_DATABASE_URL",
+				"compose.yaml":                    "image:",
+				".github/workflows/ci.yml":        "services:",
+				".env.development":                "FORGE_TEST_DATABASE_URL",
+				"app/bootstrap/bootstrap.go":      "authpostgres",
+				"cmd/shop/main.go":                "authpostgres",
 			},
 		},
 	}
