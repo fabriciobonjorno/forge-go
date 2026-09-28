@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	ErrMFAIdentityRequired = errors.New("active MFA identity is required")
-	_ auth.MFAStore         = (*Repository)(nil)
+	ErrMFAIdentityRequired               = errors.New("active MFA identity is required")
+	_                      auth.MFAStore = (*Repository)(nil)
 )
 
 func (r *Repository) BeginTOTPEnrollment(
@@ -74,7 +74,7 @@ func (r *Repository) BeginTOTPEnrollment(
 
 func (r *Repository) LoadPendingTOTP(ctx context.Context, subjectID uuid.UUID) (auth.TOTPSecretRecord, bool, error) {
 	var (
-		record auth.TOTPSecretRecord
+		record    auth.TOTPSecretRecord
 		rawDigest []byte
 	)
 	err := r.db.QueryRow(ctx, `
@@ -259,7 +259,7 @@ func (r *Repository) CreateMFAChallenge(
 
 func (r *Repository) LoadMFAChallenge(ctx context.Context, digest auth.Digest) (auth.MFAChallengeRecord, bool, error) {
 	var (
-		record auth.MFAChallengeRecord
+		record    auth.MFAChallengeRecord
 		rawDigest []byte
 	)
 	err := r.db.QueryRow(ctx, `
@@ -326,7 +326,7 @@ func (r *Repository) ConsumeMFAChallenge(
 	consumed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		var (
-			subjectID uuid.UUID
+			subjectID   uuid.UUID
 			lastCounter int64
 		)
 		err := tx.QueryRow(ctx, `
