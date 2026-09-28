@@ -74,9 +74,6 @@ func (event SecurityEvent) Validate() error {
 			return fmt.Errorf("security event %s ID must be a UUIDv7", name)
 		}
 	}
-	if !event.OccurredAt.IsZero() {
-		event.OccurredAt = event.OccurredAt.UTC()
-	}
 	return nil
 }
 
