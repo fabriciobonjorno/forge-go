@@ -30,6 +30,7 @@ type PasswordIdentity struct {
 	SubjectID    uuid.UUID
 	MembershipID uuid.UUID
 	PasswordHash string
+	MFARequired  bool
 }
 
 // PasswordStore loads current credential state and conditionally upgrades a
@@ -59,14 +60,17 @@ type LoginInput struct {
 }
 
 type LoginResult struct {
-	Token     Token
-	ExpiresAt time.Time
+	Token        Token
+	ExpiresAt    time.Time
+	MFARequired  bool
+	MFAChallenge MFAChallengeToken
 }
 
 type LoginService struct {
 	passwords PasswordStore
 	sessions  SessionCreator
 	throttler LoginThrottler
+	mfa       MFAChallengeIssuer
 	now       func() time.Time
 	ttl       time.Duration
 }
@@ -99,6 +103,16 @@ func WithLoginThrottler(throttler LoginThrottler) LoginOption {
 			return errors.New("login throttler is required")
 		}
 		service.throttler = throttler
+		return nil
+	}
+}
+
+func WithMFAChallengeIssuer(issuer MFAChallengeIssuer) LoginOption {
+	return func(service *LoginService) error {
+		if issuer == nil {
+			return errors.New("MFA challenge issuer is required")
+		}
+		service.mfa = issuer
 		return nil
 	}
 }
@@ -190,6 +204,20 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, err
 	}
 	expiresAt := s.now().UTC().Add(s.ttl)
+	if identity.MFARequired {
+		if s.mfa == nil {
+			return LoginResult{}, errors.New("MFA is required but no challenge issuer is configured")
+		}
+		challenge, challengeExpiresAt, err := s.mfa.IssueMFAChallenge(ctx, identity.MembershipID, expiresAt)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		return LoginResult{
+			MFARequired:  true,
+			MFAChallenge: challenge,
+			ExpiresAt:    challengeExpiresAt,
+		}, nil
+	}
 	token, err := s.sessions.CreateSession(ctx, identity.MembershipID, expiresAt)
 	if err != nil {
 		return LoginResult{}, err
