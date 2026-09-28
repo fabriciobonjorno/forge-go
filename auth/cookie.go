@@ -81,6 +81,7 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			Source:     requestSource(r),
 		})
 		if err != nil {
+			_, _ = logSecurityAuditFailure(r, err)
 			var throttled *LoginThrottledError
 			switch {
 			case errors.As(err, &throttled):
@@ -135,6 +136,7 @@ func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
 			Source:         requestSource(r),
 		})
 		if err != nil {
+			_, _ = logSecurityAuditFailure(r, err)
 			var throttled *LoginThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
