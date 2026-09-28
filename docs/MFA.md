@@ -98,6 +98,13 @@ Password reset/global revocation, factor replacement, membership/tenant
 deactivation, or organization deactivation therefore makes an outstanding
 challenge unusable.
 
+Session creation is credential-version-bound as well. The password lookup
+returns the exact `session_version` it verified; both direct password sessions
+and MFA challenge issuance require that version to still be current. MFA
+completion carries the challenge's version into final session creation. This
+closes the race where a password reset could otherwise occur after credential
+verification but before session persistence.
+
 Submit the challenge and current TOTP code to
 `NewMFACompletionHandler`. Successful completion atomically consumes the
 challenge and advances the factor counter before creating the normal opaque
