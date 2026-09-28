@@ -157,11 +157,12 @@ type MFAChallengeRecord struct {
 type MFAStore interface {
 	BeginTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, secretCiphertext []byte, expiresAt time.Time) error
 	LoadPendingTOTP(ctx context.Context, subjectID uuid.UUID) (record TOTPSecretRecord, found bool, err error)
-	ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, counter int64) (confirmed bool, err error)
+	ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, counter int64, backupCodeDigests []Digest) (confirmed bool, err error)
 
 	CreateMFAChallenge(ctx context.Context, digest Digest, membershipID uuid.UUID, credentialVersion int64, expiresAt, sessionExpiresAt time.Time) error
 	LoadMFAChallenge(ctx context.Context, digest Digest) (record MFAChallengeRecord, found bool, err error)
 	ConsumeMFAChallenge(ctx context.Context, digest Digest, secretDigest Digest, counter int64) (membershipID uuid.UUID, consumed bool, err error)
+	ConsumeMFABackupChallenge(ctx context.Context, digest Digest, backupCodeDigest Digest) (membershipID uuid.UUID, consumed bool, err error)
 }
 
 // MFAChallengeIssuer is the narrow LoginService dependency used after a
@@ -200,6 +201,10 @@ type TOTPEnrollment struct {
 	Secret          TOTPSecret
 	ProvisioningURI TOTPProvisioningURI
 	ExpiresAt       time.Time
+}
+
+type TOTPConfirmation struct {
+	BackupCodes []MFABackupCode
 }
 
 type MFACompletion struct {
@@ -325,31 +330,35 @@ func (s *MFAService) BeginTOTPEnrollment(ctx context.Context, subjectID uuid.UUI
 	}, nil
 }
 
-func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, code string) error {
+func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
 	record, found, err := s.store.LoadPendingTOTP(ctx, subjectID)
 	if err != nil {
-		return err
+		return TOTPConfirmation{}, err
 	}
 	now := s.now().UTC()
 	if !found || record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
-		return ErrMFAEnrollmentInvalid
+		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
 	secret, err := s.openTOTPSecret(record.SecretCiphertext, record.SecretDigest)
 	if err != nil {
-		return err
+		return TOTPConfirmation{}, err
 	}
 	counter, ok := matchTOTPCounter(secret, code, now, -1)
 	if !ok {
-		return ErrMFAEnrollmentInvalid
+		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
-	confirmed, err := s.store.ConfirmTOTPEnrollment(ctx, subjectID, record.SecretDigest, counter)
+	backupCodes, backupDigests, err := newMFABackupCodes(DefaultMFABackupCodeCount)
 	if err != nil {
-		return err
+		return TOTPConfirmation{}, err
+	}
+	confirmed, err := s.store.ConfirmTOTPEnrollment(ctx, subjectID, record.SecretDigest, counter, backupDigests)
+	if err != nil {
+		return TOTPConfirmation{}, err
 	}
 	if !confirmed {
-		return ErrMFAEnrollmentInvalid
+		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
-	return nil
+	return TOTPConfirmation{BackupCodes: backupCodes}, nil
 }
 
 func (s *MFAService) IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, credentialVersion int64, sessionExpiresAt time.Time) (MFAChallengeToken, time.Time, error) {
@@ -401,17 +410,26 @@ func (s *MFAService) CompleteLogin(ctx context.Context, completion MFACompletion
 		record.SessionExpiresAt.IsZero() || !now.Before(record.SessionExpiresAt) {
 		return LoginResult{}, ErrMFAInvalid
 	}
-	secret, err := s.openTOTPSecret(record.SecretCiphertext, record.SecretDigest)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	counter, ok := matchTOTPCounter(secret, completion.Code, now, record.LastCounter)
-	if !ok {
-		return LoginResult{}, ErrMFAInvalid
-	}
-	membershipID, consumed, err := s.store.ConsumeMFAChallenge(ctx, token.Digest(), record.SecretDigest, counter)
-	if err != nil {
-		return LoginResult{}, err
+	var membershipID uuid.UUID
+	var consumed bool
+	if backupDigest, backup := parseMFABackupCode(completion.Code); backup {
+		membershipID, consumed, err = s.store.ConsumeMFABackupChallenge(ctx, token.Digest(), backupDigest)
+		if err != nil {
+			return LoginResult{}, err
+		}
+	} else {
+		secret, err := s.openTOTPSecret(record.SecretCiphertext, record.SecretDigest)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		counter, ok := matchTOTPCounter(secret, completion.Code, now, record.LastCounter)
+		if !ok {
+			return LoginResult{}, ErrMFAInvalid
+		}
+		membershipID, consumed, err = s.store.ConsumeMFAChallenge(ctx, token.Digest(), record.SecretDigest, counter)
+		if err != nil {
+			return LoginResult{}, err
+		}
 	}
 	if !consumed {
 		return LoginResult{}, ErrMFAInvalid
