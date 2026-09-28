@@ -41,6 +41,14 @@ type HTTP struct {
 // Database configures the database connection pool. The URL's scheme selects
 // the adapter (see Adapter). An empty URL means the application runs without
 // a database.
+// Auth contains optional secrets for identity features. Zero values keep the
+// corresponding feature disabled rather than inventing insecure defaults.
+type Auth struct {
+	// MFAKey is the canonical unpadded base64url encoding of 32 random bytes
+	// used by the built-in AES-256-GCM TOTP secret cipher.
+	MFAKey Secret
+}
+
 type Database struct {
 	// URL is a postgres://, mysql:// or sqlite: URL. It usually embeds a
 	// password.
@@ -62,6 +70,7 @@ type Database struct {
 type Config struct {
 	Environment Environment
 	HTTP        HTTP
+	Auth        Auth
 	Database    Database
 }
 
