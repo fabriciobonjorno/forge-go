@@ -70,8 +70,14 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			`app.Handle("POST /auth/logout", logoutHandler)`,
 			`app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))`,
 		},
-		"db/db.go":                   {"//go:embed all:migrations"},
-		".github/workflows/ci.yml":   {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", `FORGE_TEST_REQUIRE_DATABASE: "true"`},
+		"db/db.go": {"//go:embed all:migrations"},
+		"README.md": {
+			"POST /auth/login",
+			"POST /auth/logout",
+			"GET /v1/auth/session",
+			"Forge's identity migrations",
+		},
+		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", `FORGE_TEST_REQUIRE_DATABASE: "true"`},
 	})
 }
 
