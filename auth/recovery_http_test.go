@@ -134,3 +134,57 @@ func TestPasswordRecoveryRequestHandlerMasksDeliveryFailure(t *testing.T) {
 		t.Fatalf("created=%x invalidated=%x", store.createdDigest, store.invalidated)
 	}
 }
+
+
+func TestRecoveryRequestHandlerMasksAuditFailure(t *testing.T) {
+	store := &recoveryStoreStub{
+		found:    true,
+		identity: RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "alice@example.com"},
+	}
+	service, err := NewRecoveryService(
+		store,
+		&recoverySenderStub{},
+		WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewPasswordRecoveryRequestHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/auth/recovery", bytes.NewBufferString(`{"email":"alice@example.com","tenant":"acme"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPasswordResetHandlerKeepsSuccessWhenOnlyAuditFails(t *testing.T) {
+	token, err := NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewRecoveryService(
+		&recoveryStoreStub{consumeResult: true},
+		&recoverySenderStub{},
+		WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewPasswordResetHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"token":"` + token.Reveal() + `","new_password":"replacement password"}`
+	request := httptest.NewRequest(http.MethodPost, "/auth/reset-password", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
