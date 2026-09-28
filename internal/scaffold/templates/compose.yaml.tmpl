@@ -24,6 +24,9 @@ x-app: &app
     FORGE_HTTP_ADDR: 0.0.0.0:8080
     FORGE_HTTP_TRANSPORT: plain
     FORGE_DATABASE_URL: {{.AppDatabaseURL}}
+{{- if .DB.Identity}}
+    FORGE_AUTH_MFA_KEY: ${FORGE_AUTH_MFA_KEY:-}
+{{- end}}
 {{- if not .DB.Server}}
   volumes:
     - storage:/app/storage

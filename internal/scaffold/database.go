@@ -41,6 +41,7 @@ type databaseProfile struct {
 	Adapter     string // Forge adapter package: postgres, mysql or sqlite
 	TestPackage string // its test helper package
 	Server      bool
+	Identity    bool // generated Forge identity wiring is available
 
 	// Server databases only.
 	Service       string      // compose service and host name
@@ -62,7 +63,7 @@ func profileFor(name, user, database string) *databaseProfile {
 	switch name {
 	case "postgresql":
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
-			Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true,
+			Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true, Identity: true,
 			ProductionTLS: "`sslmode=verify-full` or `verify-ca` (`sslrootcert` for a private CA)",
 			MigrationLock: "a PostgreSQL advisory lock",
 			Service:       "postgres", Image: "postgres:18-alpine", ContainerPort: 5432,

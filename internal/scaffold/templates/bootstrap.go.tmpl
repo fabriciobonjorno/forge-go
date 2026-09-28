@@ -7,6 +7,10 @@ import (
 	"net/http"
 
 	forge "github.com/fabriciobonjorno/forge-go"
+{{- if and .DB .DB.Identity}}
+	"github.com/fabriciobonjorno/forge-go/auth"
+	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
+{{- end}}
 {{- if .DB}}
 	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
 {{- end}}
@@ -28,7 +32,14 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := app.Readiness("database", database.Ping); err != nil {
 		return err
 	}
-	return routes(app)
+	if err := routes(app); err != nil {
+		return err
+	}
+{{- if .DB.Identity}}
+	return identityRoutes(app, database)
+{{- else}}
+	return nil
+{{- end}}
 }
 {{- else}}
 func Configure(_ context.Context, app *forge.App) error {
@@ -43,3 +54,87 @@ func routes(app *forge.App) error {
 func status(w http.ResponseWriter, _ *http.Request) {
 	web.JSON(w, http.StatusOK, map[string]string{"service": "{{.Name}}", "status": "ok"})
 }
+{{- if and .DB .DB.Identity}}
+
+func identityRoutes(app *forge.App, database *postgres.DB) error {
+	repository, err := authpostgres.New(database)
+	if err != nil {
+		return err
+	}
+	throttler, err := authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())
+	if err != nil {
+		return err
+	}
+	loginOptions := []auth.LoginOption{
+		auth.WithLoginThrottler(throttler),
+		auth.WithSecurityAuditor(repository),
+	}
+	var mfaCompletion http.Handler
+	if !app.Config().Auth.MFAKey.IsZero() {
+		cipher, err := auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())
+		if err != nil {
+			return err
+		}
+		mfaThrottler, err := authpostgres.NewLoginThrottler(database, auth.DefaultMFAThrottleConfig())
+		if err != nil {
+			return err
+		}
+		mfa, err := auth.NewMFAService(repository, repository, cipher, auth.WithMFAThrottler(mfaThrottler))
+		if err != nil {
+			return err
+		}
+		loginOptions = append(loginOptions, auth.WithMFAChallengeIssuer(mfa))
+		mfaCompletion, err = auth.NewMFACompletionHandler(mfa)
+		if err != nil {
+			return err
+		}
+	}
+	login, err := auth.NewLoginService(repository, repository, loginOptions...)
+	if err != nil {
+		return err
+	}
+	middleware, err := auth.NewMiddleware(repository)
+	if err != nil {
+		return err
+	}
+	loginHandler, err := auth.NewLoginHandler(login)
+	if err != nil {
+		return err
+	}
+	logoutHandler, err := auth.NewAuditedLogoutHandler(repository, repository)
+	if err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/login", loginHandler); err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/logout", logoutHandler); err != nil {
+		return err
+	}
+	if mfaCompletion != nil {
+		if err := app.Handle("POST /auth/mfa/complete", mfaCompletion); err != nil {
+			return err
+		}
+	}
+	return app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))
+}
+
+type sessionResponse struct {
+	SubjectID   string            `json:"subject_id"`
+	TenantID    string            `json:"tenant_id"`
+	Permissions []auth.Permission `json:"permissions"`
+}
+
+func currentSession(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		web.Error(w, r, auth.ErrCredentialsRequired)
+		return
+	}
+	web.JSON(w, http.StatusOK, sessionResponse{
+		SubjectID:   principal.SubjectID().String(),
+		TenantID:    principal.Tenant().ID.String(),
+		Permissions: principal.Permissions(),
+	})
+}
+{{- end}}

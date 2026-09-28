@@ -28,11 +28,11 @@ func TestSecurityAuditPersistsStructuredEvent(t *testing.T) {
 	occurredAt := time.Date(2026, 9, 28, 0, 45, 0, 0, time.UTC)
 
 	err = repo.RecordSecurityEvent(ctx, auth.SecurityEvent{
-		Kind:          auth.SecurityLoginSucceeded,
-		Outcome:       auth.SecurityOutcomeSucceeded,
-		SubjectID:     subjectID,
-		MembershipID:  membershipID,
-		AccountDigest: accountDigest,
+		Kind:             auth.SecurityLoginSucceeded,
+		Outcome:          auth.SecurityOutcomeSucceeded,
+		SubjectID:        subjectID,
+		MembershipID:     membershipID,
+		AccountDigest:    accountDigest,
 		SourceDigest:     sourceDigest,
 		CredentialDigest: credentialDigest,
 		OccurredAt:       occurredAt,
@@ -42,10 +42,10 @@ func TestSecurityAuditPersistsStructuredEvent(t *testing.T) {
 	}
 
 	var (
-		kind, outcome, requestID string
-		gotSubject, gotMembership uuid.UUID
+		kind, outcome, requestID             string
+		gotSubject, gotMembership            uuid.UUID
 		gotAccount, gotSource, gotCredential []byte
-		gotOccurred                         time.Time
+		gotOccurred                          time.Time
 	)
 	if err := db.QueryRow(ctx, `
 		SELECT kind, outcome, subject_id, membership_id,

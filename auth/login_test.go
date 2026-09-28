@@ -151,7 +151,6 @@ func (zeroReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-
 type securityAuditorStub struct {
 	events []SecurityEvent
 	err    error
@@ -164,7 +163,7 @@ func (s *securityAuditorStub) RecordSecurityEvent(_ context.Context, event Secur
 
 type revokingSessionStub struct {
 	sessionStub
-	revoked Token
+	revoked   Token
 	revokeErr error
 }
 
