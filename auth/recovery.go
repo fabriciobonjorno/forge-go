@@ -27,6 +27,7 @@ var (
 	ErrRecoveryInvalid      = fault.New("recovery_invalid", "recovery token is invalid or expired", fault.CategoryInvalid, 0)
 	ErrRecoveryThrottled    = fault.New("recovery_throttled", "too many recovery requests", fault.CategoryRateLimited, 0)
 	ErrPasswordInvalid      = fault.New("password_invalid", "password is invalid", fault.CategoryInvalid, 0)
+	ErrRecoveryDelivery     = errors.New("password recovery delivery failed")
 )
 
 type RecoveryToken struct {
@@ -236,7 +237,7 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recoveryCleanupTTL)
 		defer cancel()
 		invalidateErr := s.store.InvalidateRecovery(cleanupCtx, token.Digest())
-		return errors.Join(err, invalidateErr)
+		return &RecoveryDeliveryError{Cause: errors.Join(err, invalidateErr)}
 	}
 	return nil
 }
@@ -269,6 +270,19 @@ func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error 
 		return ErrRecoveryInvalid
 	}
 	return nil
+}
+
+type RecoveryDeliveryError struct {
+	Cause error
+}
+
+func (e *RecoveryDeliveryError) Error() string { return ErrRecoveryDelivery.Error() }
+
+func (e *RecoveryDeliveryError) Unwrap() error {
+	if e == nil || e.Cause == nil {
+		return ErrRecoveryDelivery
+	}
+	return errors.Join(ErrRecoveryDelivery, e.Cause)
 }
 
 type RecoveryThrottledError struct {
