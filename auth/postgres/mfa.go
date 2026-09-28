@@ -104,9 +104,13 @@ func (r *Repository) ConfirmTOTPEnrollment(
 	subjectID uuid.UUID,
 	secretDigest auth.Digest,
 	counter int64,
+	backupCodeDigests []auth.Digest,
 ) (bool, error) {
 	if counter < 0 {
 		return false, errors.New("TOTP counter must be non-negative")
+	}
+	if len(backupCodeDigests) != auth.DefaultMFABackupCodeCount {
+		return false, errors.New("TOTP confirmation requires the default MFA backup code set")
 	}
 	confirmed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
@@ -148,6 +152,20 @@ func (r *Repository) ConfirmTOTPEnrollment(
 		}
 		if tag.RowsAffected() != 1 {
 			return errors.New("TOTP factor was not created while enrollment was locked")
+		}
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM forge_mfa_backup_codes
+			WHERE user_id = $1
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		for _, backupDigest := range backupCodeDigests {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO forge_mfa_backup_codes (user_id, code_digest)
+				VALUES ($1, $2)
+			`, subjectID, backupDigest[:]); err != nil {
+				return postgres.Translate(err)
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE forge_users
@@ -397,6 +415,295 @@ func (r *Repository) ConsumeMFAChallenge(
 		return uuid.UUID{}, consumed, err
 	}
 	return membershipID, true, nil
+}
+
+func (r *Repository) ConsumeMFABackupChallenge(
+	ctx context.Context,
+	digest auth.Digest,
+	backupCodeDigest auth.Digest,
+) (uuid.UUID, bool, error) {
+	var membershipID uuid.UUID
+	consumed := false
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var backupID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT m.id, b.id
+			FROM forge_mfa_challenges c
+			JOIN forge_memberships m ON m.id = c.membership_id
+			JOIN forge_users u ON u.id = m.user_id
+			JOIN forge_tenants t ON t.id = m.tenant_id
+			JOIN forge_organizations o ON o.id = t.organization_id
+			JOIN forge_totp_factors f
+			  ON f.user_id = u.id
+			 AND f.secret_digest = c.factor_secret_digest
+			JOIN forge_mfa_backup_codes b
+			  ON b.user_id = u.id
+			 AND b.code_digest = $2
+			 AND b.consumed_at IS NULL
+			WHERE c.token_digest = $1
+			  AND c.consumed_at IS NULL
+			  AND c.expires_at > now()
+			  AND c.session_expires_at > now()
+			  AND c.credential_version = u.session_version
+			  AND m.status = 'active'
+			  AND u.status = 'active'
+			  AND t.status = 'active'
+			  AND o.status = 'active'
+			FOR UPDATE OF c, m, u, f, b
+		`, digest[:], backupCodeDigest[:]).Scan(&membershipID, &backupID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return postgres.Translate(err)
+		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE forge_mfa_backup_codes
+			SET consumed_at = now()
+			WHERE id = $1
+			  AND consumed_at IS NULL
+		`, backupID)
+		if err != nil {
+			return postgres.Translate(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("MFA backup code changed while it was locked")
+		}
+		tag, err = tx.Exec(ctx, `
+			UPDATE forge_mfa_challenges
+			SET consumed_at = now()
+			WHERE token_digest = $1
+			  AND consumed_at IS NULL
+		`, digest[:])
+		if err != nil {
+			return postgres.Translate(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("MFA challenge changed while it was locked")
+		}
+		consumed = true
+		return nil
+	})
+	if err != nil || !consumed {
+		return uuid.UUID{}, consumed, err
+	}
+	return membershipID, true, nil
+}
+
+func (r *Repository) BeginTOTPRotation(
+	ctx context.Context,
+	subjectID uuid.UUID,
+	secretDigest auth.Digest,
+	secretCiphertext []byte,
+	expiresAt time.Time,
+) error {
+	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
+		return errors.New("MFA subject ID must be a UUIDv7")
+	}
+	if len(secretCiphertext) == 0 {
+		return errors.New("encrypted MFA secret is required")
+	}
+	if !expiresAt.After(r.now()) {
+		return errors.New("MFA rotation expiry must be in the future")
+	}
+	return r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var locked uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT u.id
+			FROM forge_users u
+			JOIN forge_totp_factors f ON f.user_id = u.id
+			WHERE u.id = $1
+			  AND u.status = 'active'
+			FOR UPDATE OF u, f
+		`, subjectID).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return auth.ErrMFANotEnabled
+		}
+		if err != nil {
+			return postgres.Translate(err)
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO forge_totp_enrollments
+				(user_id, secret_digest, secret_ciphertext, expires_at, created_at)
+			VALUES ($1, $2, $3, $4, now())
+			ON CONFLICT (user_id) DO UPDATE
+			SET secret_digest = EXCLUDED.secret_digest,
+			    secret_ciphertext = EXCLUDED.secret_ciphertext,
+			    expires_at = EXCLUDED.expires_at,
+			    created_at = now()
+		`, subjectID, secretDigest[:], secretCiphertext, expiresAt.UTC())
+		return postgres.Translate(err)
+	})
+}
+
+func (r *Repository) ConfirmTOTPRotation(
+	ctx context.Context,
+	subjectID uuid.UUID,
+	secretDigest auth.Digest,
+	counter int64,
+	backupCodeDigests []auth.Digest,
+) (bool, error) {
+	if counter < 0 {
+		return false, errors.New("TOTP counter must be non-negative")
+	}
+	if len(backupCodeDigests) != auth.DefaultMFABackupCodeCount {
+		return false, errors.New("TOTP rotation requires the default MFA backup code set")
+	}
+	confirmed := false
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var (
+			ciphertext []byte
+			rawDigest  []byte
+		)
+		err := tx.QueryRow(ctx, `
+			SELECT e.secret_ciphertext, e.secret_digest
+			FROM forge_totp_enrollments e
+			JOIN forge_users u ON u.id = e.user_id
+			JOIN forge_totp_factors f ON f.user_id = u.id
+			WHERE e.user_id = $1
+			  AND e.secret_digest = $2
+			  AND e.expires_at > now()
+			  AND u.status = 'active'
+			FOR UPDATE OF e, u, f
+		`, subjectID, secretDigest[:]).Scan(&ciphertext, &rawDigest)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return postgres.Translate(err)
+		}
+		storedDigest, err := authDigest(rawDigest)
+		if err != nil {
+			return err
+		}
+		if storedDigest != secretDigest {
+			return errors.New("MFA rotation digest changed while locked")
+		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE forge_totp_factors
+			SET secret_digest = $2,
+			    secret_ciphertext = $3,
+			    last_counter = $4,
+			    updated_at = now()
+			WHERE user_id = $1
+		`, subjectID, secretDigest[:], ciphertext, counter)
+		if err != nil {
+			return postgres.Translate(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("active TOTP factor disappeared while rotating")
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM forge_mfa_backup_codes WHERE user_id = $1`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		for _, backupDigest := range backupCodeDigests {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO forge_mfa_backup_codes (user_id, code_digest)
+				VALUES ($1, $2)
+			`, subjectID, backupDigest[:]); err != nil {
+				return postgres.Translate(err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE forge_users
+			SET session_version = session_version + 1, updated_at = now()
+			WHERE id = $1 AND status = 'active'
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE forge_sessions s
+			SET revoked_at = COALESCE(s.revoked_at, now())
+			FROM forge_memberships m
+			WHERE s.membership_id = m.id
+			  AND m.user_id = $1
+			  AND s.revoked_at IS NULL
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE forge_mfa_challenges c
+			SET consumed_at = COALESCE(c.consumed_at, now())
+			FROM forge_memberships m
+			WHERE c.membership_id = m.id
+			  AND m.user_id = $1
+			  AND c.consumed_at IS NULL
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM forge_totp_enrollments WHERE user_id = $1`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		confirmed = true
+		return nil
+	})
+	return confirmed, err
+}
+
+func (r *Repository) DisableMFA(ctx context.Context, subjectID uuid.UUID) (bool, error) {
+	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
+		return false, errors.New("MFA subject ID must be a UUIDv7")
+	}
+	disabled := false
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var locked uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT u.id
+			FROM forge_users u
+			JOIN forge_totp_factors f ON f.user_id = u.id
+			WHERE u.id = $1
+			  AND u.status = 'active'
+			FOR UPDATE OF u, f
+		`, subjectID).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return postgres.Translate(err)
+		}
+
+		if _, err := tx.Exec(ctx, `DELETE FROM forge_mfa_backup_codes WHERE user_id = $1`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM forge_totp_enrollments WHERE user_id = $1`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM forge_totp_factors WHERE user_id = $1`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE forge_users
+			SET session_version = session_version + 1, updated_at = now()
+			WHERE id = $1 AND status = 'active'
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE forge_sessions s
+			SET revoked_at = COALESCE(s.revoked_at, now())
+			FROM forge_memberships m
+			WHERE s.membership_id = m.id
+			  AND m.user_id = $1
+			  AND s.revoked_at IS NULL
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE forge_mfa_challenges c
+			SET consumed_at = COALESCE(c.consumed_at, now())
+			FROM forge_memberships m
+			WHERE c.membership_id = m.id
+			  AND m.user_id = $1
+			  AND c.consumed_at IS NULL
+		`, subjectID); err != nil {
+			return postgres.Translate(err)
+		}
+		disabled = true
+		return nil
+	})
+	return disabled, err
 }
 
 // PruneMFA deletes expired enrollment rows and consumed/expired login

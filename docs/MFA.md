@@ -127,16 +127,33 @@ shared throttler.
 `Repository.PruneMFA(ctx, limit)` removes expired enrollments and
 consumed/expired challenges in bounded `SKIP LOCKED` batches.
 
+## Factor rotation and disable
+
+Active TOTP factors are changed only through explicit lifecycle operations.
+`BeginTOTPRotation` creates a pending replacement seed while the current
+factor stays active. `ConfirmTOTPRotation` proves the new seed, replaces the
+factor and backup-code set atomically, increments `session_version`, revokes
+all sessions, and invalidates outstanding MFA challenges.
+
+`DisableMFA` removes the active factor, pending enrollment and backup codes,
+then also increments `session_version`, revokes sessions, and invalidates
+challenges.
+
+The HTTP adapters require an application-supplied `MFAChangeAuthorizer` for
+starting rotation, confirming rotation, and disabling MFA. Applications should
+use it for strong step-up authorization such as recent password verification or
+another independently verified factor. An ordinary authenticated session alone
+is deliberately insufficient.
+
+See [ADR 0015](adr/0015-mfa-factor-lifecycle.md).
+
 ## Remaining MFA work
 
-This slice does **not** claim complete account-level MFA lifecycle support.
 Still required before Phase 3 MFA can be considered complete:
 
-- one-time backup/recovery codes;
-- explicit factor disable and rotation flows with strong reauthentication;
 - reconciliation with browser-cookie login so MFA challenges never set a
   session cookie before the second factor;
 - generated application wiring and encryption-key configuration;
 - audit events for enrollment, factor changes, MFA failures and recovery use.
 
-See [ADR 0014](adr/0014-totp-mfa.md).
+See also [ADR 0014](adr/0014-totp-mfa.md).

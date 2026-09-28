@@ -17,6 +17,7 @@ type mfaStoreStub struct {
 	pendingFound             bool
 	confirmResult            bool
 	confirmCounter           int64
+	backupDigests            []Digest
 	challenge                MFAChallengeRecord
 	challengeFound           bool
 	consumeResult            bool
@@ -27,6 +28,9 @@ type mfaStoreStub struct {
 	createdCredentialVersion int64
 	createdExpiresAt         time.Time
 	createdSessionExpiry     time.Time
+	rotationStarted          bool
+	rotationConfirmResult    bool
+	disabledResult           bool
 	err                      error
 }
 
@@ -44,6 +48,30 @@ func (s *mfaStoreStub) BeginTOTPEnrollment(_ context.Context, subjectID uuid.UUI
 	return nil
 }
 
+func (s *mfaStoreStub) BeginTOTPRotation(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time) error {
+	if err := s.BeginTOTPEnrollment(context.Background(), subjectID, digest, ciphertext, expiresAt); err != nil {
+		return err
+	}
+	s.rotationStarted = true
+	return nil
+}
+
+func (s *mfaStoreStub) ConfirmTOTPRotation(_ context.Context, _ uuid.UUID, _ Digest, counter int64, backupCodeDigests []Digest) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	s.confirmCounter = counter
+	s.backupDigests = append([]Digest(nil), backupCodeDigests...)
+	return s.rotationConfirmResult, nil
+}
+
+func (s *mfaStoreStub) DisableMFA(context.Context, uuid.UUID) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.disabledResult, nil
+}
+
 func (s *mfaStoreStub) LoadPendingTOTP(context.Context, uuid.UUID) (TOTPSecretRecord, bool, error) {
 	if s.err != nil {
 		return TOTPSecretRecord{}, false, s.err
@@ -51,11 +79,12 @@ func (s *mfaStoreStub) LoadPendingTOTP(context.Context, uuid.UUID) (TOTPSecretRe
 	return s.pending, s.pendingFound, nil
 }
 
-func (s *mfaStoreStub) ConfirmTOTPEnrollment(_ context.Context, _ uuid.UUID, _ Digest, counter int64) (bool, error) {
+func (s *mfaStoreStub) ConfirmTOTPEnrollment(_ context.Context, _ uuid.UUID, _ Digest, counter int64, backupCodeDigests []Digest) (bool, error) {
 	if s.err != nil {
 		return false, s.err
 	}
 	s.confirmCounter = counter
+	s.backupDigests = append([]Digest(nil), backupCodeDigests...)
 	return s.confirmResult, nil
 }
 
@@ -83,6 +112,16 @@ func (s *mfaStoreStub) ConsumeMFAChallenge(_ context.Context, _ Digest, _ Digest
 		return uuid.UUID{}, false, s.err
 	}
 	s.consumeCounter = counter
+	if !s.consumeResult {
+		return uuid.UUID{}, false, nil
+	}
+	return s.consumeMembership, true, nil
+}
+
+func (s *mfaStoreStub) ConsumeMFABackupChallenge(_ context.Context, _ Digest, _ Digest) (uuid.UUID, bool, error) {
+	if s.err != nil {
+		return uuid.UUID{}, false, s.err
+	}
 	if !s.consumeResult {
 		return uuid.UUID{}, false, nil
 	}
@@ -171,8 +210,17 @@ func TestTOTPEnrollmentRequiresConfirmationAndPreventsCodeReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := totpCode(rawSecret, uint64(now.Unix()/totpPeriodSeconds))
-	if err := service.ConfirmTOTPEnrollment(context.Background(), subjectID, code); err != nil {
+	confirmation, err := service.ConfirmTOTPEnrollment(context.Background(), subjectID, code)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(confirmation.BackupCodes) != DefaultMFABackupCodeCount || len(store.backupDigests) != DefaultMFABackupCodeCount {
+		t.Fatalf("backup codes=%d digests=%d", len(confirmation.BackupCodes), len(store.backupDigests))
+	}
+	for _, backupCode := range confirmation.BackupCodes {
+		if backupCode.Reveal() == "" || backupCode.String() != "[REDACTED]" {
+			t.Fatalf("backup code=%s reveal=%q", backupCode, backupCode.Reveal())
+		}
 	}
 	counter := now.Unix() / totpPeriodSeconds
 	if store.confirmCounter != counter {
@@ -344,4 +392,57 @@ func FuzzParseMFAChallengeTokenNeverPanics(f *testing.F) {
 	f.Fuzz(func(t *testing.T, secret string) {
 		_, _ = ParseMFAChallengeToken(secret)
 	})
+}
+
+
+func TestMFARotationAndDisableLifecycle(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	secretCipher, err := NewAESGCMSecretCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &mfaStoreStub{rotationConfirmResult: true, disabledResult: true}
+	service, err := NewMFAService(store, &sessionStub{}, secretCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjectID := uuid.MustNew()
+	enrollment, err := service.BeginTOTPRotation(context.Background(), subjectID, "Forge", "alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.rotationStarted {
+		t.Fatal("rotation store was not used")
+	}
+	rawSecret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(enrollment.Secret.Reveal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := service.now().UTC()
+	code := totpCode(rawSecret, uint64(now.Unix()/totpPeriodSeconds))
+	confirmation, err := service.ConfirmTOTPRotation(context.Background(), subjectID, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(confirmation.BackupCodes) != DefaultMFABackupCodeCount || len(store.backupDigests) != DefaultMFABackupCodeCount {
+		t.Fatalf("backup codes=%d digests=%d", len(confirmation.BackupCodes), len(store.backupDigests))
+	}
+	if err := service.DisableMFA(context.Background(), subjectID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMFADisableFailsWhenNotEnabled(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	secretCipher, err := NewAESGCMSecretCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewMFAService(&mfaStoreStub{}, &sessionStub{}, secretCipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DisableMFA(context.Background(), uuid.MustNew()); !errors.Is(err, ErrMFANotEnabled) {
+		t.Fatalf("error=%v", err)
+	}
 }
