@@ -34,7 +34,7 @@ func TestLoginHandlerReturnsBearerToken(t *testing.T) {
 	store := &loginStoreStub{
 		found: true,
 		identity: PasswordIdentity{
-			SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash,
+			SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash, CredentialVersion: 1,
 		},
 	}
 	sessions := &sessionStub{token: token}
