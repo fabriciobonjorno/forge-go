@@ -70,6 +70,9 @@ func TestTOTPLoginFlowAgainstPostgres(t *testing.T) {
 	if err := mfa.ConfirmTOTPEnrollment(ctx, userID, code); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := mfa.BeginTOTPEnrollment(ctx, userID, "Forge", "alice@example.com"); !errors.Is(err, auth.ErrMFAAlreadyEnabled) {
+		t.Fatalf("second enrollment error=%v", err)
+	}
 	if _, found, err := repo.ResolveSession(ctx, oldSession.Digest()); err != nil || found {
 		t.Fatalf("pre-MFA session found=%v err=%v", found, err)
 	}
