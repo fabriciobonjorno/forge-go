@@ -156,10 +156,13 @@ func TestTOTPEnrollmentRequiresConfirmationAndPreventsCodeReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if enrollment.Secret == "" || !strings.HasPrefix(enrollment.ProvisioningURI, "otpauth://totp/") {
-		t.Fatalf("enrollment=%+v", enrollment)
+	if enrollment.Secret.Reveal() == "" || !strings.HasPrefix(enrollment.ProvisioningURI.Reveal(), "otpauth://totp/") {
+		t.Fatalf("enrollment secret=%s uri=%s", enrollment.Secret, enrollment.ProvisioningURI)
 	}
-	rawSecret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(enrollment.Secret)
+	if enrollment.Secret.String() != "[REDACTED]" || enrollment.ProvisioningURI.String() != "[REDACTED]" {
+		t.Fatal("TOTP enrollment secrets do not redact")
+	}
+	rawSecret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(enrollment.Secret.Reveal())
 	if err != nil {
 		t.Fatal(err)
 	}
