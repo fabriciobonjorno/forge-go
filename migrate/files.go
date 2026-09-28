@@ -126,8 +126,6 @@ func LoadMigrations(fsys fs.FS) ([]Migration, error) {
 	return migrations, nil
 }
 
-
-
 // LoadMigrationSets loads and merges several independent migration filesystems.
 // Every set is validated with LoadMigrations first. Versions must be globally
 // unique across all sets so framework and application migrations cannot
