@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/fabriciobonjorno/forge-go/auth"
+	"github.com/fabriciobonjorno/forge-go/postgres"
 	"github.com/fabriciobonjorno/forge-go/uuid"
 	"github.com/fabriciobonjorno/forge-go/web"
 )
@@ -33,7 +34,7 @@ func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.Securit
 				 account_digest, source_digest, credential_digest, request_id, occurred_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp())
 		`, args...)
-		return Translate(err)
+		return postgres.Translate(err)
 	}
 
 	args = append(args, event.OccurredAt.UTC())
@@ -43,7 +44,7 @@ func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.Securit
 			 account_digest, source_digest, credential_digest, request_id, occurred_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, args...)
-	return Translate(err)
+	return postgres.Translate(err)
 }
 
 func nullableUUID(id uuid.UUID) any {
@@ -66,4 +67,3 @@ func nullableString(value string) any {
 	}
 	return value
 }
-
