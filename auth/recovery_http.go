@@ -38,6 +38,7 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 			Source:     requestSource(r),
 		})
 		if err != nil {
+			auditFailure, _ := logSecurityAuditFailure(r, err)
 			var throttled *RecoveryThrottledError
 			var delivery *RecoveryDeliveryError
 			switch {
@@ -49,6 +50,9 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 				// Delivery failures are account-dependent. Preserve a
 				// non-enumerating public response; sender implementations
 				// remain responsible for logging/alerting their failure.
+			case auditFailure:
+				// Audit persistence is also account-dependent for known
+				// identities. Keep the public accepted response uniform.
 			default:
 				web.Error(w, r, err)
 				return
@@ -74,6 +78,11 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 			NewPassword: request.NewPassword,
 			Source:      requestSource(r),
 		}); err != nil {
+			_, operationApplied := logSecurityAuditFailure(r, err)
+			if operationApplied {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			var throttled *RecoveryThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
