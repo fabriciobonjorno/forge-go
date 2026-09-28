@@ -47,8 +47,8 @@ silently accepted.
 - the enrollment expiry.
 
 The PostgreSQL adapter never replaces an already-active factor through this
-initial enrollment path. Rotation/disabling is a separate security-sensitive
-flow and is not implemented yet.
+initial enrollment path. Rotation and disabling use separate, step-up
+authorized lifecycle operations described below.
 
 The framework HTTP helper also requires an explicit
 `MFAEnrollmentAuthorizer`. This is deliberate: merely possessing an existing
@@ -106,10 +106,16 @@ closes the race where a password reset could otherwise occur after credential
 verification but before session persistence.
 
 Submit the challenge and current TOTP code to
-`NewMFACompletionHandler`. Successful completion atomically consumes the
-challenge and advances the factor counter before creating the normal opaque
-session. If session creation later fails, the challenge remains consumed; the
-user starts a fresh password login rather than replaying it.
+`NewMFACompletionHandler` for bearer clients. Browser-cookie clients use
+`NewCookieMFACompletionHandler`: password login returns the same `202`
+challenge without setting a session cookie, and only successful MFA completion
+sets the secure session and CSRF cookies. The cookie completion endpoint
+requires the same HTTPS same-origin `Origin` check as cookie login.
+
+Successful completion atomically consumes the challenge and advances the factor
+counter before creating the normal opaque session. If session creation later
+fails, the challenge remains consumed; the user starts a fresh password login
+rather than replaying it.
 
 MFA attempts are rate-limited by domain-separated challenge and source hashes.
 The default in-memory limiter allows five attempts per challenge and 60 per
@@ -149,11 +155,10 @@ See [ADR 0015](adr/0015-mfa-factor-lifecycle.md).
 
 ## Remaining MFA work
 
-Still required before Phase 3 MFA can be considered complete:
+Still required before Phase 3 identity can be considered complete:
 
-- reconciliation with browser-cookie login so MFA challenges never set a
-  session cookie before the second factor;
 - generated application wiring and encryption-key configuration;
-- audit events for enrollment, factor changes, MFA failures and recovery use.
+- audit instrumentation for enrollment, factor changes, MFA failures and
+  recovery flows.
 
 See also [ADR 0014](adr/0014-totp-mfa.md).
