@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -24,13 +25,23 @@ type mfaCompletionRequest struct {
 	Code           string `json:"code"`
 }
 
+type MFAEnrollmentAuthorizer interface {
+	AuthorizeMFAEnrollment(ctx context.Context, principal Principal) error
+}
+
+type MFAEnrollmentAuthorizerFunc func(context.Context, Principal) error
+
+func (fn MFAEnrollmentAuthorizerFunc) AuthorizeMFAEnrollment(ctx context.Context, principal Principal) error {
+	return fn(ctx, principal)
+}
+
 // NewTOTPEnrollmentHandler starts TOTP enrollment for the authenticated
-// principal. The issuer is server-controlled; the subject UUID is used as the
-// default authenticator label so the handler never trusts a client-supplied
-// account identity.
-func NewTOTPEnrollmentHandler(service *MFAService, issuer string) (http.Handler, error) {
-	if service == nil {
-		return nil, errors.New("MFA service is required")
+// principal only after an application-supplied step-up authorizer succeeds.
+// The issuer is server-controlled; the subject UUID is used as the default
+// authenticator label so the handler never trusts a client-supplied identity.
+func NewTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFAEnrollmentAuthorizer) (http.Handler, error) {
+	if service == nil || authorizer == nil {
+		return nil, errors.New("MFA service and enrollment authorizer are required")
 	}
 	issuer = strings.TrimSpace(issuer)
 	if !validTOTPLabel(issuer, 128) {
@@ -41,6 +52,10 @@ func NewTOTPEnrollmentHandler(service *MFAService, issuer string) (http.Handler,
 		principal, ok := FromContext(r.Context())
 		if !ok {
 			web.Error(w, r, ErrCredentialsRequired)
+			return
+		}
+		if err := authorizer.AuthorizeMFAEnrollment(r.Context(), principal); err != nil {
+			web.Error(w, r, err)
 			return
 		}
 		enrollment, err := service.BeginTOTPEnrollment(
