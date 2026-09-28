@@ -24,6 +24,7 @@ func TestSecurityAuditPersistsStructuredEvent(t *testing.T) {
 	membershipID := uuid.MustNew()
 	accountDigest := auth.Digest(sha256.Sum256([]byte("account-key")))
 	sourceDigest := auth.Digest(sha256.Sum256([]byte("source-key")))
+	credentialDigest := auth.Digest(sha256.Sum256([]byte("credential-key")))
 	occurredAt := time.Date(2026, 9, 28, 0, 45, 0, 0, time.UTC)
 
 	err = repo.RecordSecurityEvent(ctx, auth.SecurityEvent{
@@ -32,8 +33,9 @@ func TestSecurityAuditPersistsStructuredEvent(t *testing.T) {
 		SubjectID:     subjectID,
 		MembershipID:  membershipID,
 		AccountDigest: accountDigest,
-		SourceDigest:  sourceDigest,
-		OccurredAt:    occurredAt,
+		SourceDigest:     sourceDigest,
+		CredentialDigest: credentialDigest,
+		OccurredAt:       occurredAt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -42,16 +44,16 @@ func TestSecurityAuditPersistsStructuredEvent(t *testing.T) {
 	var (
 		kind, outcome, requestID string
 		gotSubject, gotMembership uuid.UUID
-		gotAccount, gotSource []byte
-		gotOccurred time.Time
+		gotAccount, gotSource, gotCredential []byte
+		gotOccurred                         time.Time
 	)
 	if err := db.QueryRow(ctx, `
 		SELECT kind, outcome, subject_id, membership_id,
-		       account_digest, source_digest, request_id, occurred_at
+		       account_digest, source_digest, credential_digest, request_id, occurred_at
 		FROM forge_security_audit_events
 	`).Scan(
 		&kind, &outcome, &gotSubject, &gotMembership,
-		&gotAccount, &gotSource, &requestID, &gotOccurred,
+		&gotAccount, &gotSource, &gotCredential, &requestID, &gotOccurred,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -61,8 +63,10 @@ func TestSecurityAuditPersistsStructuredEvent(t *testing.T) {
 	if gotSubject != subjectID || gotMembership != membershipID {
 		t.Fatalf("subject=%s membership=%s", gotSubject, gotMembership)
 	}
-	if string(gotAccount) != string(accountDigest[:]) || string(gotSource) != string(sourceDigest[:]) {
-		t.Fatalf("account=%x source=%x", gotAccount, gotSource)
+	if string(gotAccount) != string(accountDigest[:]) ||
+		string(gotSource) != string(sourceDigest[:]) ||
+		string(gotCredential) != string(credentialDigest[:]) {
+		t.Fatalf("account=%x source=%x credential=%x", gotAccount, gotSource, gotCredential)
 	}
 	if requestID != "req-audit-1" || !gotOccurred.Equal(occurredAt) {
 		t.Fatalf("request_id=%q occurred_at=%v", requestID, gotOccurred)
