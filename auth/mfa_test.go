@@ -88,15 +88,17 @@ func (s *mfaStoreStub) ConsumeMFAChallenge(_ context.Context, _ Digest, _ Digest
 }
 
 type mfaIssuerStub struct {
-	token            MFAChallengeToken
-	expiresAt        time.Time
-	membershipID     uuid.UUID
-	sessionExpiresAt time.Time
-	err              error
+	token             MFAChallengeToken
+	expiresAt         time.Time
+	membershipID      uuid.UUID
+	credentialVersion int64
+	sessionExpiresAt  time.Time
+	err               error
 }
 
-func (s *mfaIssuerStub) IssueMFAChallenge(_ context.Context, membershipID uuid.UUID, sessionExpiresAt time.Time) (MFAChallengeToken, time.Time, error) {
+func (s *mfaIssuerStub) IssueMFAChallenge(_ context.Context, membershipID uuid.UUID, credentialVersion int64, sessionExpiresAt time.Time) (MFAChallengeToken, time.Time, error) {
 	s.membershipID = membershipID
+	s.credentialVersion = credentialVersion
 	s.sessionExpiresAt = sessionExpiresAt
 	return s.token, s.expiresAt, s.err
 }
@@ -194,8 +196,9 @@ func TestLoginWithMFAIssuesChallengeInsteadOfSession(t *testing.T) {
 		identity: PasswordIdentity{
 			SubjectID:    uuid.MustNew(),
 			MembershipID: membershipID,
-			PasswordHash: hash,
-			MFARequired:  true,
+			PasswordHash:      hash,
+			CredentialVersion: 1,
+			MFARequired:       true,
 		},
 	}
 	sessions := &sessionStub{}
@@ -222,8 +225,8 @@ func TestLoginWithMFAIssuesChallengeInsteadOfSession(t *testing.T) {
 	if sessions.membership != (uuid.UUID{}) {
 		t.Fatal("password login created a session before MFA")
 	}
-	if issuer.membershipID != membershipID || !issuer.sessionExpiresAt.Equal(now.Add(defaultSessionTTL)) {
-		t.Fatalf("issuer membership=%s session expiry=%v", issuer.membershipID, issuer.sessionExpiresAt)
+	if issuer.membershipID != membershipID || issuer.credentialVersion != 1 || !issuer.sessionExpiresAt.Equal(now.Add(defaultSessionTTL)) {
+		t.Fatalf("issuer membership=%s version=%d session expiry=%v", issuer.membershipID, issuer.credentialVersion, issuer.sessionExpiresAt)
 	}
 }
 
@@ -253,7 +256,8 @@ func TestMFACompletionConsumesChallengeBeforeCreatingSession(t *testing.T) {
 		challengeFound: true,
 		challenge: MFAChallengeRecord{
 			SubjectID:        uuid.MustNew(),
-			MembershipID:     membershipID,
+			MembershipID:      membershipID,
+			CredentialVersion: 1,
 			SecretDigest:     digest,
 			SecretCiphertext: sealed,
 			LastCounter:      -1,
@@ -280,8 +284,8 @@ func TestMFACompletionConsumesChallengeBeforeCreatingSession(t *testing.T) {
 	if store.consumeCounter != now.Unix()/totpPeriodSeconds {
 		t.Fatalf("consume counter=%d", store.consumeCounter)
 	}
-	if sessions.membership != membershipID || !sessions.expiresAt.Equal(now.Add(12*time.Hour)) {
-		t.Fatalf("session membership=%s expires=%v", sessions.membership, sessions.expiresAt)
+	if sessions.membership != membershipID || sessions.credentialVersion != 1 || !sessions.expiresAt.Equal(now.Add(12*time.Hour)) {
+		t.Fatalf("session membership=%s version=%d expires=%v", sessions.membership, sessions.credentialVersion, sessions.expiresAt)
 	}
 	if result.Token.Digest() != sessionToken.Digest() || !result.ExpiresAt.Equal(now.Add(12*time.Hour)) {
 		t.Fatalf("result=%+v", result)
@@ -306,7 +310,8 @@ func TestMFACompletionFailsClosedOnConsumeRace(t *testing.T) {
 		challengeFound: true,
 		challenge: MFAChallengeRecord{
 			SubjectID:        uuid.MustNew(),
-			MembershipID:     uuid.MustNew(),
+			MembershipID:      uuid.MustNew(),
+			CredentialVersion: 1,
 			SecretDigest:     digest,
 			SecretCiphertext: sealed,
 			LastCounter:      -1,
