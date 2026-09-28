@@ -116,7 +116,7 @@ func (r *Repository) ConfirmTOTPEnrollment(
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		var (
 			ciphertext []byte
-			rawDigest []byte
+			rawDigest  []byte
 		)
 		err := tx.QueryRow(ctx, `
 			SELECT e.secret_ciphertext, e.secret_digest

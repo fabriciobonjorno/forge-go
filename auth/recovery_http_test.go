@@ -106,10 +106,9 @@ func TestPasswordResetHandlerConsumesToken(t *testing.T) {
 	}
 }
 
-
 func TestPasswordRecoveryRequestHandlerMasksDeliveryFailure(t *testing.T) {
 	store := &recoveryStoreStub{
-		found: true,
+		found:    true,
 		identity: RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "alice@example.com"},
 	}
 	sender := &recoverySenderStub{err: errors.New("mailer unavailable")}
@@ -134,7 +133,6 @@ func TestPasswordRecoveryRequestHandlerMasksDeliveryFailure(t *testing.T) {
 		t.Fatalf("created=%x invalidated=%x", store.createdDigest, store.invalidated)
 	}
 }
-
 
 func TestRecoveryRequestHandlerMasksAuditFailure(t *testing.T) {
 	store := &recoveryStoreStub{

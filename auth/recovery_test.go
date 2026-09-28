@@ -268,7 +268,6 @@ func FuzzParseRecoveryTokenNeverPanics(f *testing.F) {
 	})
 }
 
-
 func TestRecoveryAuditsKnownAndUnknownRequests(t *testing.T) {
 	subjectID := uuid.MustNew()
 	store := &recoveryStoreStub{

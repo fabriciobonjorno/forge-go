@@ -23,6 +23,9 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	if value, ok := lookup("FORGE_HTTP_TRANSPORT"); ok {
 		cfg.HTTP.Transport = TransportMode(value)
 	}
+	if value, ok := lookup("FORGE_AUTH_MFA_KEY"); ok {
+		cfg.Auth.MFAKey = NewSecret(value)
+	}
 	if value, ok := lookup("FORGE_DATABASE_URL"); ok {
 		cfg.Database.URL = NewSecret(value)
 	}

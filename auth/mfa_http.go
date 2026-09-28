@@ -154,7 +154,6 @@ func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
 	}), nil
 }
 
-
 type MFAChangeAuthorizer interface {
 	AuthorizeMFAChange(ctx context.Context, principal Principal) error
 }

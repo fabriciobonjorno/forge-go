@@ -10,6 +10,9 @@ package main
 
 import (
 	forge "github.com/fabriciobonjorno/forge-go"
+{{- if and .DB .DB.Identity}}
+	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
+{{- end}}
 {{- if .DB}}
 	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
 {{- end}}
@@ -20,7 +23,14 @@ import (
 {{- end}}
 )
 
-{{if .DB -}}
+{{if and .DB .DB.Identity -}}
+func main() {
+	forge.Main(
+		bootstrap.Configure,
+		postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations())...,
+	)
+}
+{{- else if .DB -}}
 func main() { forge.Main(bootstrap.Configure, {{.DB.Adapter}}.Commands(db.Migrations())...) }
 {{- else -}}
 func main() { forge.Main(bootstrap.Configure) }

@@ -59,7 +59,7 @@ func TestLoadMigrationSetsMergesAndSorts(t *testing.T) {
 	application := fstest.MapFS{
 		"20260103000000_app.up.sql":   {Data: []byte("CREATE TABLE app_state (id int);")},
 		"20260103000000_app.down.sql": {Data: []byte("DROP TABLE app_state;")},
-		"20260101000000_base.up.sql":   {Data: []byte("CREATE TABLE base_state (id int);")},
+		"20260101000000_base.up.sql":  {Data: []byte("CREATE TABLE base_state (id int);")},
 	}
 	loaded, err := migrate.LoadMigrationSets(framework, application)
 	if err != nil {

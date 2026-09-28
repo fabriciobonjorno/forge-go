@@ -253,3 +253,148 @@ func TestCookieLogoutRequiresCSRFRevokesAndClearsCookies(t *testing.T) {
 		t.Fatalf("missing CSRF status=%d body=%s", missingRecorder.Code, missingRecorder.Body.String())
 	}
 }
+
+func TestCookieLoginReturnsMFAChallengeWithoutSessionCookies(t *testing.T) {
+	hash, err := HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := NewMFAChallengeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipID := uuid.MustNew()
+	now := time.Date(2026, 9, 27, 21, 0, 0, 0, time.UTC)
+	store := &loginStoreStub{
+		found: true,
+		identity: PasswordIdentity{
+			SubjectID:         uuid.MustNew(),
+			MembershipID:      membershipID,
+			PasswordHash:      hash,
+			CredentialVersion: 7,
+			MFARequired:       true,
+		},
+	}
+	sessions := &sessionStub{}
+	issuer := &mfaIssuerStub{token: challenge, expiresAt: now.Add(5 * time.Minute)}
+	service, err := NewLoginService(
+		store,
+		sessions,
+		WithLoginClock(func() time.Time { return now }),
+		WithMFAChallengeIssuer(issuer),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewCookieLoginHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"email":"alice@example.com","password":"secret","tenant":"acme"}`)
+	request := httptest.NewRequest(http.MethodPost, "https://app.example.com/auth/browser/login", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://app.example.com")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(recorder.Result().Cookies()) != 0 {
+		t.Fatalf("cookies issued before MFA completion: %+v", recorder.Result().Cookies())
+	}
+	if sessions.membership != (uuid.UUID{}) {
+		t.Fatalf("session created before MFA completion: %s", sessions.membership)
+	}
+	var response mfaRequiredResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.MFARequired || response.ChallengeToken != challenge.Reveal() || !response.ExpiresAt.Equal(now.Add(5*time.Minute)) {
+		t.Fatalf("response=%+v", response)
+	}
+	if issuer.membershipID != membershipID || issuer.credentialVersion != 7 {
+		t.Fatalf("issuer membership=%s version=%d", issuer.membershipID, issuer.credentialVersion)
+	}
+}
+
+func TestCookieMFACompletionSetsSessionAndCSRFCookies(t *testing.T) {
+	now := time.Date(2026, 9, 27, 21, 15, 0, 0, time.UTC)
+	challenge, err := NewMFAChallengeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupCodes, _, err := newMFABackupCodes(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionToken, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipID := uuid.MustNew()
+	store := &mfaStoreStub{
+		challengeFound: true,
+		challenge: MFAChallengeRecord{
+			MembershipID:      membershipID,
+			CredentialVersion: 3,
+			ExpiresAt:         now.Add(5 * time.Minute),
+			SessionExpiresAt:  now.Add(time.Hour),
+		},
+		consumeResult:     true,
+		consumeMembership: membershipID,
+	}
+	cipher, err := NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := &sessionStub{token: sessionToken}
+	service, err := NewMFAService(store, sessions, cipher, WithMFAClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewCookieMFACompletionHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"challenge_token":"` + challenge.Reveal() + `","code":"` + backupCodes[0].Reveal() + `"}`)
+	request := httptest.NewRequest(http.MethodPost, "https://app.example.com/auth/browser/mfa", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://app.example.com")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), sessionToken.Reveal()) {
+		t.Fatal("cookie MFA completion exposed the bearer session token")
+	}
+	if sessions.membership != membershipID || sessions.credentialVersion != 3 {
+		t.Fatalf("session membership=%s version=%d", sessions.membership, sessions.credentialVersion)
+	}
+	var response cookieLoginResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.CSRFToken == "" || !response.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("response=%+v", response)
+	}
+	var sessionCookie, csrfCookie *http.Cookie
+	for _, cookie := range recorder.Result().Cookies() {
+		switch cookie.Name {
+		case SessionCookieName:
+			sessionCookie = cookie
+		case CSRFCookieName:
+			csrfCookie = cookie
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value != sessionToken.Reveal() || !sessionCookie.Secure || !sessionCookie.HttpOnly {
+		t.Fatalf("session cookie=%+v", sessionCookie)
+	}
+	if csrfCookie == nil || csrfCookie.Value != response.CSRFToken || !csrfCookie.Secure || csrfCookie.HttpOnly {
+		t.Fatalf("csrf cookie=%+v", csrfCookie)
+	}
+}

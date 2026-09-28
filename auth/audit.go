@@ -13,20 +13,20 @@ import (
 type SecurityEventKind string
 
 const (
-	SecurityLoginSucceeded          SecurityEventKind = "auth.login.succeeded"
-	SecurityLoginFailed             SecurityEventKind = "auth.login.failed"
-	SecurityLoginThrottled          SecurityEventKind = "auth.login.throttled"
-	SecuritySessionRevoked          SecurityEventKind = "auth.session.revoked"
-	SecuritySessionsRevoked         SecurityEventKind = "auth.sessions.revoked"
-	SecurityRecoveryRequested       SecurityEventKind = "auth.recovery.requested"
-	SecurityPasswordReset           SecurityEventKind = "auth.password.reset"
-	SecurityMFAEnrollmentStarted    SecurityEventKind = "auth.mfa.enrollment_started"
-	SecurityMFAEnabled              SecurityEventKind = "auth.mfa.enabled"
-	SecurityMFAChallengeFailed      SecurityEventKind = "auth.mfa.challenge_failed"
-	SecurityMFABackupCodeUsed       SecurityEventKind = "auth.mfa.backup_code_used"
-	SecurityMFARotationStarted      SecurityEventKind = "auth.mfa.rotation_started"
-	SecurityMFARotated              SecurityEventKind = "auth.mfa.rotated"
-	SecurityMFADisabled             SecurityEventKind = "auth.mfa.disabled"
+	SecurityLoginSucceeded       SecurityEventKind = "auth.login.succeeded"
+	SecurityLoginFailed          SecurityEventKind = "auth.login.failed"
+	SecurityLoginThrottled       SecurityEventKind = "auth.login.throttled"
+	SecuritySessionRevoked       SecurityEventKind = "auth.session.revoked"
+	SecuritySessionsRevoked      SecurityEventKind = "auth.sessions.revoked"
+	SecurityRecoveryRequested    SecurityEventKind = "auth.recovery.requested"
+	SecurityPasswordReset        SecurityEventKind = "auth.password.reset"
+	SecurityMFAEnrollmentStarted SecurityEventKind = "auth.mfa.enrollment_started"
+	SecurityMFAEnabled           SecurityEventKind = "auth.mfa.enabled"
+	SecurityMFAChallengeFailed   SecurityEventKind = "auth.mfa.challenge_failed"
+	SecurityMFABackupCodeUsed    SecurityEventKind = "auth.mfa.backup_code_used"
+	SecurityMFARotationStarted   SecurityEventKind = "auth.mfa.rotation_started"
+	SecurityMFARotated           SecurityEventKind = "auth.mfa.rotated"
+	SecurityMFADisabled          SecurityEventKind = "auth.mfa.disabled"
 )
 
 type SecurityOutcome string
@@ -43,11 +43,11 @@ var securityEventKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,95}$`)
 // arbitrary metadata map, so normal audit calls cannot accidentally attach a
 // password, bearer token, recovery link, TOTP seed, or backup code.
 type SecurityEvent struct {
-	Kind          SecurityEventKind
-	Outcome       SecurityOutcome
-	ActorID       uuid.UUID
-	SubjectID     uuid.UUID
-	MembershipID  uuid.UUID
+	Kind             SecurityEventKind
+	Outcome          SecurityOutcome
+	ActorID          uuid.UUID
+	SubjectID        uuid.UUID
+	MembershipID     uuid.UUID
 	AccountDigest    Digest
 	SourceDigest     Digest
 	CredentialDigest Digest

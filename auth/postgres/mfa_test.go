@@ -53,7 +53,7 @@ func TestTOTPLoginFlowAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 27, 20, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	clock := func() time.Time { return now }
 	mfa, err := auth.NewMFAService(repo, repo, secretCipher, auth.WithMFAClock(clock))
 	if err != nil {
@@ -208,7 +208,7 @@ func TestMFAChallengeDiesAfterCredentialVersionChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 27, 21, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	clock := func() time.Time { return now }
 	mfa, err := auth.NewMFAService(repo, repo, secretCipher, auth.WithMFAClock(clock))
 	if err != nil {
@@ -258,7 +258,6 @@ func testTOTPCode(secret []byte, now time.Time) string {
 		uint32(sum[offset+3])) % 1_000_000
 	return fmt.Sprintf("%06d", value)
 }
-
 
 func TestMFARotationAndDisableAgainstPostgres(t *testing.T) {
 	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
