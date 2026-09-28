@@ -69,8 +69,8 @@ func NewTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFA
 			return
 		}
 		web.JSON(w, http.StatusOK, totpEnrollmentResponse{
-			Secret:          enrollment.Secret,
-			ProvisioningURI: enrollment.ProvisioningURI,
+			Secret:          enrollment.Secret.Reveal(),
+			ProvisioningURI: enrollment.ProvisioningURI.Reveal(),
 			ExpiresAt:       enrollment.ExpiresAt,
 		})
 	}), nil
