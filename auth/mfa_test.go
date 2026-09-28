@@ -13,20 +13,20 @@ import (
 )
 
 type mfaStoreStub struct {
-	pending             TOTPSecretRecord
-	pendingFound        bool
-	confirmResult       bool
-	confirmCounter      int64
-	challenge           MFAChallengeRecord
-	challengeFound      bool
-	consumeResult       bool
-	consumeMembership   uuid.UUID
-	consumeCounter      int64
-	createdChallenge    Digest
-	createdMembership   uuid.UUID
-	createdExpiresAt    time.Time
+	pending              TOTPSecretRecord
+	pendingFound         bool
+	confirmResult        bool
+	confirmCounter       int64
+	challenge            MFAChallengeRecord
+	challengeFound       bool
+	consumeResult        bool
+	consumeMembership    uuid.UUID
+	consumeCounter       int64
+	createdChallenge     Digest
+	createdMembership    uuid.UUID
+	createdExpiresAt     time.Time
 	createdSessionExpiry time.Time
-	err                 error
+	err                  error
 }
 
 func (s *mfaStoreStub) BeginTOTPEnrollment(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time) error {
@@ -88,11 +88,11 @@ func (s *mfaStoreStub) ConsumeMFAChallenge(_ context.Context, _ Digest, _ Digest
 }
 
 type mfaIssuerStub struct {
-	token             MFAChallengeToken
-	expiresAt         time.Time
-	membershipID      uuid.UUID
-	sessionExpiresAt  time.Time
-	err               error
+	token            MFAChallengeToken
+	expiresAt        time.Time
+	membershipID     uuid.UUID
+	sessionExpiresAt time.Time
+	err              error
 }
 
 func (s *mfaIssuerStub) IssueMFAChallenge(_ context.Context, membershipID uuid.UUID, sessionExpiresAt time.Time) (MFAChallengeToken, time.Time, error) {
@@ -328,4 +328,14 @@ func TestMFACompletionFailsClosedOnConsumeRace(t *testing.T) {
 	if sessions.membership != (uuid.UUID{}) {
 		t.Fatal("session created after MFA consume race")
 	}
+}
+
+
+func FuzzParseMFAChallengeTokenNeverPanics(f *testing.F) {
+	for _, seed := range []string{"", "x", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, secret string) {
+		_, _ = ParseMFAChallengeToken(secret)
+	})
 }
