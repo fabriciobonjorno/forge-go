@@ -67,7 +67,7 @@ func TestTOTPLoginFlowAgainstPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := testTOTPCode(rawSecret, now)
-	if err := mfa.ConfirmTOTPEnrollment(ctx, userID, code); err != nil {
+	if _, err := mfa.ConfirmTOTPEnrollment(ctx, userID, code); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mfa.BeginTOTPEnrollment(ctx, userID, "Forge", "alice@example.com"); !errors.Is(err, auth.ErrMFAAlreadyEnabled) {
@@ -165,7 +165,7 @@ func TestMFAChallengeDiesAfterCredentialVersionChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mfa.ConfirmTOTPEnrollment(ctx, userID, testTOTPCode(rawSecret, now)); err != nil {
+	if _, err := mfa.ConfirmTOTPEnrollment(ctx, userID, testTOTPCode(rawSecret, now)); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(30 * time.Second)
