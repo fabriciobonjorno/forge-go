@@ -201,9 +201,11 @@ func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...R
 	return service, nil
 }
 
-// Request always returns nil for syntactically invalid or unknown identities,
-// so callers can give the same public response without account enumeration.
-// Infrastructure, throttling, persistence and delivery failures remain errors.
+// Request treats syntactically invalid and unknown identities as accepted
+// no-ops for public semantics. With auditing configured, an audit-persistence
+// failure may still be returned to non-HTTP callers; the HTTP adapter masks
+// that account-dependent failure as the same 202 response. Infrastructure,
+// throttling, persistence and delivery failures remain errors.
 func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) error {
 	email, tenant, ok := normalizeRecoveryIdentity(request.Email, request.TenantSlug)
 	if !ok {
