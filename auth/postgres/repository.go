@@ -15,8 +15,10 @@ import (
 )
 
 var (
-	ErrMembershipRequired = errors.New("active membership is required")
-	ErrExpiryRequired     = errors.New("session expiry must be in the future")
+	ErrMembershipRequired                    = errors.New("active membership is required")
+	ErrExpiryRequired                        = errors.New("session expiry must be in the future")
+	_                     auth.SessionCreator = (*Repository)(nil)
+	_           auth.CredentialSessionCreator = (*Repository)(nil)
 )
 
 type Repository struct {
