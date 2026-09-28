@@ -344,7 +344,7 @@ func TestMFACompletionConsumesChallengeBeforeCreatingSession(t *testing.T) {
 	store := &mfaStoreStub{
 		challengeFound: true,
 		challenge: MFAChallengeRecord{
-			SubjectID:        uuid.MustNew(),
+			SubjectID:         uuid.MustNew(),
 			MembershipID:      membershipID,
 			CredentialVersion: 1,
 			SecretDigest:      digest,
@@ -398,7 +398,7 @@ func TestMFACompletionFailsClosedOnConsumeRace(t *testing.T) {
 	store := &mfaStoreStub{
 		challengeFound: true,
 		challenge: MFAChallengeRecord{
-			SubjectID:        uuid.MustNew(),
+			SubjectID:         uuid.MustNew(),
 			MembershipID:      uuid.MustNew(),
 			CredentialVersion: 1,
 			SecretDigest:      digest,
@@ -432,7 +432,6 @@ func FuzzParseMFAChallengeTokenNeverPanics(f *testing.F) {
 		_, _ = ParseMFAChallengeToken(secret)
 	})
 }
-
 
 func TestMFARotationAndDisableLifecycle(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")

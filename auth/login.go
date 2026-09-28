@@ -19,7 +19,7 @@ const (
 	// A syntactically valid hash with an impossible all-zero derived key.
 	// Missing identities still execute PBKDF2 so account/tenant misses do not
 	// take a dramatically cheaper path than a wrong password.
-	dummyPasswordHash = "$pbkdf2-sha256$v=1$i=600000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	dummyPasswordHash = "$pbkdf2-sha256$v=1$i=600000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" // #nosec G101 -- an all-zero derived key is a public timing-equalizer, not a credential
 )
 
 var tenantSlugPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)

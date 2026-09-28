@@ -160,7 +160,6 @@ func TestRequestSourceUsesPeerAddressNotForwardedHeaders(t *testing.T) {
 	}
 }
 
-
 func TestAuditedLogoutRecordsCredentialDigest(t *testing.T) {
 	token, err := NewToken()
 	if err != nil {

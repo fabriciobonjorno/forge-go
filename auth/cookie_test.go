@@ -254,7 +254,6 @@ func TestCookieLogoutRequiresCSRFRevokesAndClearsCookies(t *testing.T) {
 	}
 }
 
-
 func TestCookieLoginReturnsMFAChallengeWithoutSessionCookies(t *testing.T) {
 	hash, err := HashPassword("secret")
 	if err != nil {

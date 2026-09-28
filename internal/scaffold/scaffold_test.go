@@ -248,11 +248,11 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"app/bootstrap/bootstrap_test.go": {"sqlitetest.Config(t)"},
 			},
 			forbidden: map[string]string{
-				"compose.yaml":                    "image:",
-				".github/workflows/ci.yml":        "services:",
-				".env.development":                "FORGE_TEST_DATABASE_URL",
-				"app/bootstrap/bootstrap.go":      "authpostgres",
-				"cmd/shop/main.go":                "authpostgres",
+				"compose.yaml":               "image:",
+				".github/workflows/ci.yml":   "services:",
+				".env.development":           "FORGE_TEST_DATABASE_URL",
+				"app/bootstrap/bootstrap.go": "authpostgres",
+				"cmd/shop/main.go":           "authpostgres",
 			},
 		},
 	}

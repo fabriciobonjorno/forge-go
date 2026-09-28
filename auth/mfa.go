@@ -6,7 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- RFC 6238 TOTP interoperability requires HMAC-SHA1 support.
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
@@ -88,9 +88,6 @@ type AESGCMSecretCipher struct {
 	aead cipher.AEAD
 }
 
-// NewAESGCMSecretCipher builds a standard-library AES-256-GCM secret cipher.
-// Applications must load the 32-byte key from an external secret manager or
-// environment secret and must not store it in the identity database.
 // NewAESGCMSecretCipherBase64 decodes a canonical unpadded base64url key and
 // builds the standard AES-256-GCM cipher. Errors never echo the secret value.
 func NewAESGCMSecretCipherBase64(encoded string) (*AESGCMSecretCipher, error) {
@@ -101,6 +98,9 @@ func NewAESGCMSecretCipherBase64(encoded string) (*AESGCMSecretCipher, error) {
 	return NewAESGCMSecretCipher(raw)
 }
 
+// NewAESGCMSecretCipher builds a standard-library AES-256-GCM secret cipher.
+// Applications must load the 32-byte key from an external secret manager or
+// environment secret and must not store it in the identity database.
 func NewAESGCMSecretCipher(key []byte) (*AESGCMSecretCipher, error) {
 	if len(key) != 32 {
 		return nil, errors.New("MFA encryption key must be exactly 32 bytes")

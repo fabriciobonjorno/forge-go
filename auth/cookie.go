@@ -249,6 +249,7 @@ func parseCSRFToken(value string) ([]byte, error) {
 
 func setSessionCookies(w http.ResponseWriter, sessionToken, csrfToken string, expiresAt time.Time) {
 	expiresAt = expiresAt.UTC()
+	// #nosec G124 -- Lax is the intentional SameSite policy; all cookie security flags are set explicitly.
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sessionToken,
@@ -258,6 +259,7 @@ func setSessionCookies(w http.ResponseWriter, sessionToken, csrfToken string, ex
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
+	// #nosec G124 -- JavaScript must read the CSRF double-submit cookie; Secure and SameSite remain enabled.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    csrfToken,
@@ -272,7 +274,9 @@ func setSessionCookies(w http.ResponseWriter, sessionToken, csrfToken string, ex
 func clearSessionCookies(w http.ResponseWriter) {
 	expired := time.Unix(1, 0).UTC()
 	for _, cookie := range []*http.Cookie{
+		// #nosec G124 -- Lax is the intentional SameSite policy; all cookie security flags are set explicitly.
 		{Name: SessionCookieName, Path: "/", Expires: expired, MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode},
+		// #nosec G124 -- the CSRF double-submit cookie is intentionally readable by JavaScript.
 		{Name: CSRFCookieName, Path: "/", Expires: expired, MaxAge: -1, Secure: true, HttpOnly: false, SameSite: http.SameSiteLaxMode},
 	} {
 		http.SetCookie(w, cookie)

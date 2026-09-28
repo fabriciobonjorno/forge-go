@@ -94,7 +94,7 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 	store := &mfaStoreStub{
 		challengeFound: true,
 		challenge: MFAChallengeRecord{
-			SubjectID:        uuid.MustNew(),
+			SubjectID:         uuid.MustNew(),
 			MembershipID:      membershipID,
 			CredentialVersion: 1,
 			SecretDigest:      sha256.Sum256(secret),
@@ -257,7 +257,6 @@ func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 		}
 	}
 }
-
 
 func TestMFALifecycleHandlersRequireStepUp(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")

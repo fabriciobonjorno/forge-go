@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrRecoveryIdentityRequired = errors.New("active recovery identity is required")
+	ErrRecoveryIdentityRequired                    = errors.New("active recovery identity is required")
 	_                           auth.RecoveryStore = (*Repository)(nil)
 )
 
