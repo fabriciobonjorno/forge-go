@@ -7,6 +7,7 @@ CREATE TABLE forge_security_audit_events (
     membership_id uuid,
     account_digest bytea CHECK (account_digest IS NULL OR octet_length(account_digest) = 32),
     source_digest bytea CHECK (source_digest IS NULL OR octet_length(source_digest) = 32),
+    credential_digest bytea CHECK (credential_digest IS NULL OR octet_length(credential_digest) = 32),
     request_id varchar(128),
     occurred_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
