@@ -27,8 +27,8 @@ func TestLoginHandlerReturnsMFAChallengeWithoutSession(t *testing.T) {
 	store := &loginStoreStub{
 		found: true,
 		identity: PasswordIdentity{
-			SubjectID:    uuid.MustNew(),
-			MembershipID: membershipID,
+			SubjectID:         uuid.MustNew(),
+			MembershipID:      membershipID,
 			PasswordHash:      hash,
 			CredentialVersion: 1,
 			MFARequired:       true,
