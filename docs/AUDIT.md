@@ -60,3 +60,32 @@ flow to emit events is intentionally incremental, especially while recovery and
 MFA are landing on separate Phase 3 branches.
 
 See [ADR 0016](adr/0016-structured-security-audit.md).
+
+
+## Login and logout instrumentation
+
+`LoginService` can receive a `SecurityAuditor` with
+`auth.WithSecurityAuditor`.
+
+For syntactically valid attempts it records only hashed account/source keys and,
+when the identity is known, subject and membership IDs:
+
+- `auth.login.failed` / `denied` for an unknown identity, wrong password,
+  or credential-upgrade race;
+- `auth.login.throttled` / `denied` when throttling blocks the attempt;
+- `auth.login.succeeded` / `succeeded` after the opaque session is created.
+
+Audit failure never turns a denied login into a successful login. The returned
+error keeps the original credentials/throttling classification and also carries
+a typed `SecurityAuditError`, allowing HTTP adapters to log the subsystem
+failure while preserving the public `401` or `429`.
+
+For successful login, the token is not returned to the caller until the success
+event is persisted. If audit persistence fails and the session backend also
+implements `SessionRevoker`, Forge revokes the just-created session before
+returning the audit error.
+
+`NewAuditedLogoutHandler` records `auth.session.revoked` using only the
+SHA-256 credential digest. Once revocation succeeds, an audit-storage failure
+is logged but does not change the idempotent `204` response: the security
+action already happened and retrying logout does not improve its result.
