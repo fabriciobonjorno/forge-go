@@ -23,14 +23,15 @@ func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.Securit
 		nullableUUID(event.MembershipID),
 		nullableDigest(event.AccountDigest),
 		nullableDigest(event.SourceDigest),
+		nullableDigest(event.CredentialDigest),
 		nullableString(web.RequestID(ctx)),
 	}
 	if event.OccurredAt.IsZero() {
 		_, err := r.db.Exec(ctx, `
 			INSERT INTO forge_security_audit_events
 				(kind, outcome, actor_id, subject_id, membership_id,
-				 account_digest, source_digest, request_id, occurred_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp())
+				 account_digest, source_digest, credential_digest, request_id, occurred_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp())
 		`, args...)
 		return Translate(err)
 	}
@@ -39,8 +40,8 @@ func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.Securit
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO forge_security_audit_events
 			(kind, outcome, actor_id, subject_id, membership_id,
-			 account_digest, source_digest, request_id, occurred_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			 account_digest, source_digest, credential_digest, request_id, occurred_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, args...)
 	return Translate(err)
 }
