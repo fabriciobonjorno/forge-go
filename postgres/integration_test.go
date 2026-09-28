@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	forge "github.com/fabriciobonjorno/forge-go"
 	"github.com/fabriciobonjorno/forge-go/config"
@@ -182,6 +183,9 @@ func TestInTenantTxEnforcesRLSAndDoesNotLeakTenant(t *testing.T) {
 			if !slices.Equal(titles, []string{want}) {
 				return fmt.Errorf("tenant saw titles %v, want [%s]", titles, want)
 			}
+			if _, err := tx.Exec(ctx, "SAVEPOINT cross_tenant_insert"); err != nil {
+				return fmt.Errorf("savepoint cross-tenant insert: %w", err)
+			}
 			other := tenantA
 			if tenant == tenantA {
 				other = tenantB
@@ -189,6 +193,13 @@ func TestInTenantTxEnforcesRLSAndDoesNotLeakTenant(t *testing.T) {
 			_, err = tx.Exec(ctx, "INSERT INTO tenant_documents (id, tenant_id, title) VALUES ($1, $2, 'cross-tenant')", uuid.MustNew(), other.ID)
 			if err == nil {
 				return errors.New("RLS allowed a cross-tenant insert")
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+				return fmt.Errorf("cross-tenant insert failed for an unexpected reason: %w", err)
+			}
+			if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT cross_tenant_insert"); err != nil {
+				return fmt.Errorf("rollback cross-tenant insert: %w", err)
 			}
 			return nil
 		})
