@@ -535,6 +535,24 @@ db/migrations/20260926143000_create_notes.down.sql   (optional)
 - Write the SQL of the database you use; migrations are not portable between
   databases.
 
+### Composing framework and application migrations
+
+`migrate.LoadMigrationSets` validates and merges independent migration
+filesystems into one version-ordered history. This is useful when an
+application owns `db/migrations` while a framework subsystem such as
+`auth/postgres` contributes its own embedded schema.
+
+Migration versions remain globally unique across every set. A duplicate version
+between framework and application migrations is an error even when the names or
+SQL differ. Set validation and collision detection happen before a database
+connection opens.
+
+For operational commands, use `migrate.CommandsFromSets` (or the
+adapter-specific equivalent when exposed by the composition root) with all
+migration filesystems. The resulting `migrate`, `migrate status`, and
+`rollback` commands operate on the same merged history and the same
+`forge_schema_migrations` table.
+
 `forge generate migration NAME` (run in the application root) creates the
 pair with the current UTC time as the version. `NAME` must match
 `^[a-z][a-z0-9_]{0,99}$`. If another migration already uses that second, the
@@ -644,8 +662,11 @@ migrations instead of refusing.
 
 ### Commands
 
-Application binaries built with `forge.Main(bootstrap.Configure,
-<adapter>.Commands(db.Migrations())...)` accept:
+Application binaries with one migration set are still built with
+`forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)`.
+Applications composing framework and application schemas should build the same
+commands from the merged migration sets instead. In both cases the binary
+accepts:
 
 | Command | Effect |
 | ------- | ------ |
