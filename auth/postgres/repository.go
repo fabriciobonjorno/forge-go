@@ -34,7 +34,8 @@ func New(db *postgres.DB) (*Repository, error) {
 func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenantSlug string) (auth.PasswordIdentity, bool, error) {
 	var identity auth.PasswordIdentity
 	err := r.db.QueryRow(ctx, `
-		SELECT u.id, m.id, u.password_hash
+		SELECT u.id, m.id, u.password_hash,
+		       EXISTS (SELECT 1 FROM forge_totp_factors f WHERE f.user_id = u.id)
 		FROM forge_users u
 		JOIN forge_memberships m ON m.user_id = u.id
 		JOIN forge_tenants t ON t.id = m.tenant_id
@@ -45,7 +46,7 @@ func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenant
 		  AND m.status = 'active'
 		  AND t.status = 'active'
 		  AND o.status = 'active'
-	`, emailNormalized, tenantSlug).Scan(&identity.SubjectID, &identity.MembershipID, &identity.PasswordHash)
+	`, emailNormalized, tenantSlug).Scan(&identity.SubjectID, &identity.MembershipID, &identity.PasswordHash, &identity.MFARequired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.PasswordIdentity{}, false, nil
 	}
