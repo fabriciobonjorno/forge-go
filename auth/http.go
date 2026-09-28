@@ -22,6 +22,12 @@ type loginResponse struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 }
 
+type mfaRequiredResponse struct {
+	MFARequired    bool      `json:"mfa_required"`
+	ChallengeToken string    `json:"challenge_token"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
 // NewLoginHandler returns a thin HTTP adapter over LoginService.
 func NewLoginHandler(service *LoginService) (http.Handler, error) {
 	if service == nil {
@@ -62,6 +68,14 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 			return
 		}
 		noStore(w)
+		if result.MFARequired {
+			web.JSON(w, http.StatusAccepted, mfaRequiredResponse{
+				MFARequired:    true,
+				ChallengeToken: result.MFAChallenge.Reveal(),
+				ExpiresAt:      result.ExpiresAt,
+			})
+			return
+		}
 		web.JSON(w, http.StatusOK, loginResponse{
 			AccessToken: result.Token.Reveal(),
 			TokenType:   "Bearer",

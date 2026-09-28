@@ -32,14 +32,20 @@ func (s *loginStoreStub) ReplacePasswordHash(_ context.Context, subjectID uuid.U
 }
 
 type sessionStub struct {
-	membership uuid.UUID
-	expiresAt  time.Time
-	token      Token
-	err        error
+	membership        uuid.UUID
+	credentialVersion int64
+	expiresAt         time.Time
+	token             Token
+	err               error
 }
 
 func (s *sessionStub) CreateSession(_ context.Context, membership uuid.UUID, expiresAt time.Time) (Token, error) {
 	s.membership, s.expiresAt = membership, expiresAt
+	return s.token, s.err
+}
+
+func (s *sessionStub) CreateSessionAtVersion(_ context.Context, membership uuid.UUID, credentialVersion int64, expiresAt time.Time) (Token, error) {
+	s.membership, s.credentialVersion, s.expiresAt = membership, credentialVersion, expiresAt
 	return s.token, s.err
 }
 
@@ -54,7 +60,7 @@ func TestLoginNormalizesIdentifierAndCreatesSession(t *testing.T) {
 	}
 	subjectID, membershipID := uuid.MustNew(), uuid.MustNew()
 	store := &loginStoreStub{
-		identity: PasswordIdentity{SubjectID: subjectID, MembershipID: membershipID, PasswordHash: passwordHash},
+		identity: PasswordIdentity{SubjectID: subjectID, MembershipID: membershipID, PasswordHash: passwordHash, CredentialVersion: 1},
 		found:    true,
 	}
 	sessions := &sessionStub{token: token}
@@ -75,8 +81,8 @@ func TestLoginNormalizesIdentifierAndCreatesSession(t *testing.T) {
 	if store.lookEmail != "alice@example.com" || store.lookTenant != "acme" {
 		t.Fatalf("lookup=(%q,%q)", store.lookEmail, store.lookTenant)
 	}
-	if sessions.membership != membershipID || sessions.expiresAt != now.Add(12*time.Hour) {
-		t.Fatalf("session membership=%s expires=%v", sessions.membership, sessions.expiresAt)
+	if sessions.membership != membershipID || sessions.credentialVersion != 1 || sessions.expiresAt != now.Add(12*time.Hour) {
+		t.Fatalf("session membership=%s version=%d expires=%v", sessions.membership, sessions.credentialVersion, sessions.expiresAt)
 	}
 	if result.Token.Digest() != token.Digest() || result.ExpiresAt != now.Add(12*time.Hour) {
 		t.Fatalf("result=%+v", result)
@@ -94,7 +100,7 @@ func TestLoginFailsClosedForAuthenticationMisses(t *testing.T) {
 		store *loginStoreStub
 	}{
 		{"unknown identity", LoginInput{Email: "a@example.com", Password: "wrong", TenantSlug: "acme"}, &loginStoreStub{}},
-		{"wrong password", LoginInput{Email: "a@example.com", Password: "wrong", TenantSlug: "acme"}, &loginStoreStub{found: true, identity: PasswordIdentity{SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: validHash}}},
+		{"wrong password", LoginInput{Email: "a@example.com", Password: "wrong", TenantSlug: "acme"}, &loginStoreStub{found: true, identity: PasswordIdentity{SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: validHash, CredentialVersion: 1}}},
 		{"invalid email", LoginInput{Email: "not-email", Password: "wrong", TenantSlug: "acme"}, &loginStoreStub{}},
 		{"invalid tenant", LoginInput{Email: "a@example.com", Password: "wrong", TenantSlug: "../global"}, &loginStoreStub{}},
 	}
@@ -122,7 +128,7 @@ func TestLoginRehashRaceDoesNotIssueSession(t *testing.T) {
 	}
 	store := &loginStoreStub{
 		found:    true,
-		identity: PasswordIdentity{SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: oldHash},
+		identity: PasswordIdentity{SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: oldHash, CredentialVersion: 1},
 		replaced: false,
 	}
 	sessions := &sessionStub{}
@@ -177,6 +183,7 @@ func TestLoginAuditsDeniedAndSuccessfulOutcomes(t *testing.T) {
 		found: true,
 		identity: PasswordIdentity{
 			SubjectID: subjectID, MembershipID: membershipID, PasswordHash: hash,
+			CredentialVersion: 1,
 		},
 	}
 	auditor := &securityAuditorStub{}
@@ -265,6 +272,7 @@ func TestLoginRevokesCreatedSessionWhenSuccessAuditFails(t *testing.T) {
 		found: true,
 		identity: PasswordIdentity{
 			SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash,
+			CredentialVersion: 1,
 		},
 	}
 	sessions := &revokingSessionStub{sessionStub: sessionStub{token: token}}
