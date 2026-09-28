@@ -83,10 +83,16 @@ The generated API exposes:
 - `GET /v1/auth/session` as an authenticated example returning the current
   subject, tenant, and permissions.
 
-Run `migrate` before serving so the Forge identity tables exist. MFA,
-browser-cookie auth, account recovery delivery, and user-registration policy
-remain application opt-ins because they require deployment secrets, step-up
-policy, HTTPS/browser choices, or an external delivery provider.
+If `FORGE_AUTH_MFA_KEY` is configured, the generated app also wires
+`POST /auth/mfa/complete`. The value must be canonical unpadded base64url for
+exactly 32 random bytes and belongs in `.env.local` during development or a
+secret manager in deployed environments. It is never stored in the identity
+database.
+
+Run `migrate` before serving so the Forge identity tables exist. TOTP
+enrollment/rotation, browser-cookie auth, account recovery delivery, and
+user-registration policy remain application opt-ins because they require
+step-up policy, HTTPS/browser choices, or an external delivery provider.
 {{- end}}
 
 ## Deploy
