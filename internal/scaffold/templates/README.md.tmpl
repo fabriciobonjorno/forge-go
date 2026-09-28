@@ -67,6 +67,27 @@ forge rollback                           # revert the latest migration
 
 Domain, application, adapter and infrastructure packages live under `app/`
 and are added as the application grows.
+{{- if and .DB .DB.Identity}}
+
+## Identity
+
+PostgreSQL projects include Forge's identity migrations alongside application
+migrations and wire the PostgreSQL identity repository into the generated
+composition root.
+
+The generated API exposes:
+
+- `POST /auth/login` for tenant-scoped email/password bearer login;
+- `POST /auth/logout` for idempotent bearer-session revocation with security
+  audit;
+- `GET /v1/auth/session` as an authenticated example returning the current
+  subject, tenant, and permissions.
+
+Run `migrate` before serving so the Forge identity tables exist. MFA,
+browser-cookie auth, account recovery delivery, and user-registration policy
+remain application opt-ins because they require deployment secrets, step-up
+policy, HTTPS/browser choices, or an external delivery provider.
+{{- end}}
 
 ## Deploy
 
