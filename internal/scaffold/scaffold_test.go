@@ -44,6 +44,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		".dockerignore": {".git", ".env"},
 		"compose.yaml": {
 			"image: postgres:18-alpine",
+			"FORGE_AUTH_MFA_KEY: ${FORGE_AUTH_MFA_KEY:-}",
 			"POSTGRES_DB: billing_api_development",
 			"postgres:/var/lib/postgresql",
 			`command: ["migrate"]`,
@@ -66,6 +67,9 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
 			"auth.NewLoginService(",
 			"auth.WithSecurityAuditor(repository)",
+			"auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())",
+			"auth.NewMFAService(repository, repository, cipher",
+			`app.Handle("POST /auth/mfa/complete", mfaCompletion)`,
 			`app.Handle("POST /auth/login", loginHandler)`,
 			`app.Handle("POST /auth/logout", logoutHandler)`,
 			`app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))`,
@@ -75,6 +79,8 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"POST /auth/login",
 			"POST /auth/logout",
 			"GET /v1/auth/session",
+			"POST /auth/mfa/complete",
+			"FORGE_AUTH_MFA_KEY",
 			"Forge's identity migrations",
 		},
 		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", `FORGE_TEST_REQUIRE_DATABASE: "true"`},
@@ -214,6 +220,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"Dockerfile":                 "storage",
 				"app/bootstrap/bootstrap.go": "authpostgres",
 				"cmd/shop/main.go":           "authpostgres",
+				"compose.yaml":               "FORGE_AUTH_MFA_KEY",
 			},
 		},
 		{
@@ -228,6 +235,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"compose.yaml":               "mysql:8.4",
 				"app/bootstrap/bootstrap.go": "authpostgres",
 				"cmd/shop/main.go":           "authpostgres",
+				"compose.yaml":               "FORGE_AUTH_MFA_KEY",
 			},
 		},
 		{
@@ -247,6 +255,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				".env.development":                "FORGE_TEST_DATABASE_URL",
 				"app/bootstrap/bootstrap.go":      "authpostgres",
 				"cmd/shop/main.go":                "authpostgres",
+				"compose.yaml":                    "FORGE_AUTH_MFA_KEY",
 			},
 		},
 	}
