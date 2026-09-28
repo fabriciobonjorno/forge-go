@@ -12,7 +12,7 @@ A `SecurityEvent` can contain only:
 - a validated lowercase event kind;
 - one of the fixed outcomes `succeeded`, `denied`, or `failed`;
 - optional actor, subject, and membership UUIDv7 identifiers;
-- optional account/source SHA-256 digests;
+- optional account/source/credential SHA-256 digests;
 - an optional occurrence time.
 
 This shape is intentionally restrictive. Authentication systems routinely
