@@ -61,5 +61,13 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"database"`) {
 		t.Fatalf("readiness status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+{{- if .DB.Identity}}
+
+	authRecorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(authRecorder, httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil))
+	if authRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated session status=%d body=%s", authRecorder.Code, authRecorder.Body.String())
+	}
+{{- end}}
 }
 {{- end}}
