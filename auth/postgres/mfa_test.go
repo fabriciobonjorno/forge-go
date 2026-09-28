@@ -123,7 +123,6 @@ func TestTOTPLoginFlowAgainstPostgres(t *testing.T) {
 	}); !errors.Is(err, auth.ErrMFAInvalid) {
 		t.Fatalf("replayed challenge error=%v", err)
 	}
-}
 
 	now = now.Add(30 * time.Second)
 	backupChallenge, err := login.Login(ctx, auth.LoginInput{
@@ -176,7 +175,7 @@ func TestTOTPLoginFlowAgainstPostgres(t *testing.T) {
 	if remaining != auth.DefaultMFABackupCodeCount-1 {
 		t.Fatalf("remaining backup codes=%d", remaining)
 	}
-
+}
 
 func TestMFAChallengeDiesAfterCredentialVersionChange(t *testing.T) {
 	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
