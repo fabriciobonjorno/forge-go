@@ -170,10 +170,16 @@ Cookie logout requires CSRF, revokes a valid session credential when present,
 clears both cookies, and remains idempotent for unknown or already-revoked
 sessions.
 
-See [ADR 0012](adr/0012-cookie-sessions-and-csrf.md).
+When MFA is enabled, cookie login returns `202 mfa_required` without setting
+session or CSRF cookies. `NewCookieMFACompletionHandler` performs the second
+factor exchange and only then creates both browser cookies. This prevents the
+password step from accidentally creating an authenticated browser session.
+
+See [ADR 0012](adr/0012-cookie-sessions-and-csrf.md) and [MFA.md](MFA.md).
 
 ## Remaining Phase 3 work
 
-Account recovery, MFA, audit events, generated application wiring, and
-equivalent database-enforcement strategies for MySQL, MariaDB and SQLite are
-still planned.
+Generated application wiring, full audit instrumentation of the remaining
+identity flows, encryption-key configuration for generated MFA deployments,
+and equivalent database-enforcement strategies for MySQL, MariaDB and SQLite
+are still planned.

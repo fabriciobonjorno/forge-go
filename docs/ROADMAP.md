@@ -166,12 +166,17 @@ Implemented foundation:
   metadata ([ADR 0016](adr/0016-structured-security-audit.md));
 - one-time password recovery with digest-only tokens, non-enumerating request
   responses, global session revocation on reset, and bounded cleanup
-  ([ADR 0013](adr/0013-password-recovery.md)).
+  ([ADR 0013](adr/0013-password-recovery.md));
+- replay-safe TOTP MFA with encrypted seeds, short-lived digest-only challenges,
+  one-time backup codes, factor rotation/disable, credential-version-bound
+  session creation, and bearer/browser completion flows
+  ([ADR 0014](adr/0014-totp-mfa.md), [ADR 0015](adr/0015-mfa-factor-lifecycle.md)).
 
-Still planned on the main line: MFA, full audit instrumentation of remaining
-identity flows, generated application wiring, and a decided
-database-enforcement strategy for MySQL, MariaDB and SQLite. See
-[AUTHENTICATION.md](AUTHENTICATION.md) and [MULTI_TENANCY.md](MULTI_TENANCY.md).
+Still planned on the main line: full audit instrumentation of remaining
+identity flows, generated application wiring and MFA key configuration, and a
+decided database-enforcement strategy for MySQL, MariaDB and SQLite. See
+[AUTHENTICATION.md](AUTHENTICATION.md), [MFA.md](MFA.md), and
+[MULTI_TENANCY.md](MULTI_TENANCY.md).
 
 ## Phase 4 - Asynchronous work
 
