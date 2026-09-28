@@ -27,11 +27,11 @@ var tenantSlugPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
 // PasswordIdentity is the minimum server-side state needed to verify a login.
 // PasswordHash must never be returned to clients or logs.
 type PasswordIdentity struct {
-	SubjectID        uuid.UUID
-	MembershipID     uuid.UUID
-	PasswordHash     string
+	SubjectID         uuid.UUID
+	MembershipID      uuid.UUID
+	PasswordHash      string
 	CredentialVersion int64
-	MFARequired      bool
+	MFARequired       bool
 }
 
 // PasswordStore loads current credential state and conditionally upgrades a
