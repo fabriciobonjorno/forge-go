@@ -1,9 +1,10 @@
 # Threat Model
 
 Scope: the Forge framework, the `forge` CLI, and the applications and
-container images that `forge new` generates, as of Phase 2 (including the
-database adapters for PostgreSQL, MySQL, MariaDB, and SQLite, and
-migrations). Method: STRIDE per component. Items
+container images that `forge new` generates, including Phase 3 identity work
+through password login, login throttling, opaque sessions, browser-cookie
+sessions, CSRF, recovery, security audit, and PostgreSQL tenancy enforcement.
+Method: STRIDE per component. Items
 marked **Planned** are not implemented.
 
 STRIDE key: **S**poofing, **T**ampering, **R**epudiation, **I**nformation
@@ -16,7 +17,8 @@ disclosure, **D**enial of service, **E**levation of privilege.
 - Confidentiality and integrity of data stored in the database (a server,
   or a SQLite file on the application host).
 - Confidentiality of configuration values, database credentials, TLS keys,
-  and internal errors.
+  password hashes, active session credentials, recovery credentials, and
+  internal errors.
 - Integrity of the database schema and its migration history.
 - Integrity of the build: source, dependencies, and container image.
 - The developer's filesystem when running the CLI.
@@ -158,8 +160,12 @@ disclosure, **D**enial of service, **E**levation of privilege.
 
 | Threat | STRIDE | Mitigation |
 | ------ | ------ | ---------- |
-| Bearer token stolen from session storage | S, E | Tokens contain 256 random bits; applications persist only the SHA-256 digest. `Token` exposes the secret only through the explicit `Reveal` method. |
-| Stale or forged role claims | S, E | Tokens carry no claims. The resolver contract requires current user, membership, expiration and permissions on every request. Exactly one canonical Bearer header is accepted; cookies, query and tenant headers are not fallbacks. |
+| Session token stolen from persistence | S, E | Tokens contain 256 random bits; persistence stores only the SHA-256 digest. `Token` exposes the plaintext only through explicit `Reveal`. |
+| Browser session token read by JavaScript | I, E | Cookie sessions use the fixed `__Host-forge_session` cookie with `Secure`, `HttpOnly`, `Path=/`, no `Domain`, and `SameSite=Lax`. Cookie login never returns the session token in its body. |
+| Cross-site request forgery | T, E | Unsafe cookie-authenticated requests require the fixed `__Host-forge_csrf` 256-bit token to match exactly one `X-CSRF-Token` header in constant time. Cookie logout includes the CSRF check by default. Safe methods bypass the check and therefore must not mutate state. |
+| Login CSRF | S, T | Cookie login requires exactly one HTTPS `Origin` whose host equals `Request.Host`. The bearer login surface remains available for non-browser clients. |
+| Password guessing and spraying | S, D | Login is throttled independently by hashed tenant+account and source keys. The default process-local limiter is bounded; PostgreSQL deployments can share counters across replicas. Unknown accounts take the same throttle path and perform a dummy PBKDF2 verification. |
+| Stale or forged role claims | S, E | Tokens carry no claims. The resolver contract requires current user, membership, expiration and permissions on every request. Bearer and cookie transports are explicit and do not fall back to one another; query and tenant headers are not authentication fallbacks. |
 | Missing authorization check | E | `auth.Require` denies without a principal and denies a principal without the exact permission. Permissions have no wildcard semantics. Application route coverage remains the application's responsibility. |
 | Tenant omitted or forged | E, I | `tenancy.Require` has no default. Authentication installs the tenant returned by the server-side resolver; client tenant headers are ignored. |
 | Tenant leaks through a pooled PostgreSQL connection | I, E | `InTenantTx` sets `forge.tenant_id` transaction-locally on every retry. Integration tests prove RLS read/write isolation and that the setting is cleared. The serving role must not be superuser or `BYPASSRLS`. |
@@ -172,7 +178,7 @@ disclosure, **D**enial of service, **E**levation of privilege.
 
 | Area | Planned mitigation |
 | ---- | ------------------ |
-| Identity completion (Phase 3) | Concrete session store, account/membership/role schema, passwords, browser cookies/CSRF, MFA, recovery, generated wiring and audit events. |
+| Identity completion (Phase 3) | MFA, generated application wiring, remaining identity-flow audit instrumentation, and a decided tenancy-enforcement strategy for MySQL, MariaDB, and SQLite. |
 | AI execution (Phase 7) | Mandatory `Intent -> Policy -> Validation -> Authorization -> Execution -> Audit` pipeline; no step skippable; execution limited to the authorizing principal's privileges; every execution audited. |
 
 ## Residual risks
@@ -197,4 +203,5 @@ disclosure, **D**enial of service, **E**levation of privilege.
   `no-transaction` migrations.
 - TLS certificate rotation requires a restart.
 - Default CSP blocks HTML rendering; applications that relax it take on XSS
-  risk.
+  risk. XSS can act with a browser session and read its CSRF token even though
+  the HttpOnly session cookie itself is not readable by JavaScript.

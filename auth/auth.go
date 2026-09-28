@@ -1,4 +1,5 @@
-// Package auth provides opaque bearer-session authentication and deny-by-
+// Package auth provides opaque session authentication over explicit bearer or
+// secure-cookie transports, CSRF protection for browser sessions, and deny-by-
 // default permission checks. Session resolvers must load current account,
 // tenant membership and permissions on every request; long-lived role claims
 // are deliberately not part of the token.
@@ -138,32 +139,40 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			unauthorized(w, r, err)
 			return
 		}
-		token, err := ParseToken(secret)
+		ctx, err := m.authenticateContext(r.Context(), secret)
 		if err != nil {
-			unauthorized(w, r, ErrCredentialsInvalid)
-			return
-		}
-		session, found, err := m.resolver.ResolveSession(r.Context(), token.Digest())
-		if err != nil {
+			if errors.Is(err, ErrCredentialsInvalid) {
+				unauthorized(w, r, ErrCredentialsInvalid)
+				return
+			}
 			web.Error(w, r, err)
 			return
 		}
-		if !found || session.ExpiresAt.IsZero() || !m.now().Before(session.ExpiresAt) {
-			unauthorized(w, r, ErrCredentialsInvalid)
-			return
-		}
-		if session.Principal.subjectID.Version() != 7 || session.Principal.subjectID.Variant() != 2 {
-			web.Error(w, r, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).WithCause(errors.New("session resolver returned an invalid principal")))
-			return
-		}
-		ctx, err := tenancy.WithContext(r.Context(), session.Principal.tenant)
-		if err != nil {
-			web.Error(w, r, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).WithCause(err))
-			return
-		}
-		ctx = withPrincipal(ctx, session.Principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (m *Middleware) authenticateContext(ctx context.Context, secret string) (context.Context, error) {
+	token, err := ParseToken(secret)
+	if err != nil {
+		return nil, ErrCredentialsInvalid
+	}
+	session, found, err := m.resolver.ResolveSession(ctx, token.Digest())
+	if err != nil {
+		return nil, err
+	}
+	if !found || session.ExpiresAt.IsZero() || !m.now().Before(session.ExpiresAt) {
+		return nil, ErrCredentialsInvalid
+	}
+	if session.Principal.subjectID.Version() != 7 || session.Principal.subjectID.Variant() != 2 {
+		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).
+			WithCause(errors.New("session resolver returned an invalid principal"))
+	}
+	ctx, err = tenancy.WithContext(ctx, session.Principal.tenant)
+	if err != nil {
+		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).WithCause(err)
+	}
+	return withPrincipal(ctx, session.Principal), nil
 }
 
 func Require(permission Permission, next http.Handler) (http.Handler, error) {

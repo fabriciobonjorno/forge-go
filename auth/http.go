@@ -61,6 +61,7 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 			}
 			return
 		}
+		noStore(w)
 		web.JSON(w, http.StatusOK, loginResponse{
 			AccessToken: result.Token.Reveal(),
 			TokenType:   "Bearer",
@@ -139,4 +140,9 @@ func retryAfterHeader(duration time.Duration) string {
 		seconds = 1
 	}
 	return strconv.FormatInt(seconds, 10)
+}
+
+func noStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 }

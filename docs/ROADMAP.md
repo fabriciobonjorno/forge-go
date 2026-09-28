@@ -157,14 +157,21 @@ Implemented foundation:
 - account/source login throttling with a bounded in-memory default, HTTP 429
   plus Retry-After, and a shared PostgreSQL adapter with bounded pruning
   ([ADR 0011](adr/0011-login-throttling.md));
+- explicit browser-cookie sessions with secure `__Host-` cookies, same-origin
+  login protection, double-submit CSRF validation, CSRF-protected logout, and
+  no-store login responses
+  ([ADR 0012](adr/0012-cookie-sessions-and-csrf.md));
 - structured security-audit event contract plus append-only PostgreSQL
   persistence with request-ID correlation and no arbitrary secret-bearing
-  metadata ([ADR 0016](adr/0016-structured-security-audit.md)).
+  metadata ([ADR 0016](adr/0016-structured-security-audit.md));
+- one-time password recovery with digest-only tokens, non-enumerating request
+  responses, global session revocation on reset, and bounded cleanup
+  ([ADR 0013](adr/0013-password-recovery.md)).
 
-Still planned on the main line: cookie sessions and CSRF, account recovery, MFA,
-full audit instrumentation of identity flows, generated application wiring, and
-a decided database-enforcement strategy for MySQL, MariaDB and SQLite. See [AUTHENTICATION.md](AUTHENTICATION.md) and
-[MULTI_TENANCY.md](MULTI_TENANCY.md).
+Still planned on the main line: MFA, full audit instrumentation of remaining
+identity flows, generated application wiring, and a decided
+database-enforcement strategy for MySQL, MariaDB and SQLite. See
+[AUTHENTICATION.md](AUTHENTICATION.md) and [MULTI_TENANCY.md](MULTI_TENANCY.md).
 
 ## Phase 4 - Asynchronous work
 
