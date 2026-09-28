@@ -34,7 +34,7 @@ func New(db *postgres.DB) (*Repository, error) {
 func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenantSlug string) (auth.PasswordIdentity, bool, error) {
 	var identity auth.PasswordIdentity
 	err := r.db.QueryRow(ctx, `
-		SELECT u.id, m.id, u.password_hash,
+		SELECT u.id, m.id, u.password_hash, u.session_version,
 		       EXISTS (SELECT 1 FROM forge_totp_factors f WHERE f.user_id = u.id)
 		FROM forge_users u
 		JOIN forge_memberships m ON m.user_id = u.id
@@ -46,7 +46,7 @@ func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenant
 		  AND m.status = 'active'
 		  AND t.status = 'active'
 		  AND o.status = 'active'
-	`, emailNormalized, tenantSlug).Scan(&identity.SubjectID, &identity.MembershipID, &identity.PasswordHash, &identity.MFARequired)
+	`, emailNormalized, tenantSlug).Scan(&identity.SubjectID, &identity.MembershipID, &identity.PasswordHash, &identity.CredentialVersion, &identity.MFARequired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.PasswordIdentity{}, false, nil
 	}
@@ -106,6 +106,52 @@ func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, 
 	}
 	if tag.RowsAffected() == 0 {
 		return auth.Token{}, ErrMembershipRequired
+	}
+	return token, nil
+}
+
+// CreateSessionAtVersion creates a session only when credentialVersion is still
+// the user's current version. This closes the race between credential
+// verification and session persistence.
+func (r *Repository) CreateSessionAtVersion(
+	ctx context.Context,
+	membershipID uuid.UUID,
+	credentialVersion int64,
+	expiresAt time.Time,
+) (auth.Token, error) {
+	if membershipID.Version() != 7 || membershipID.Variant() != 2 {
+		return auth.Token{}, errors.New("membership ID must be a UUIDv7")
+	}
+	if credentialVersion < 1 {
+		return auth.Token{}, errors.New("credential version must be positive")
+	}
+	if !expiresAt.After(r.now()) {
+		return auth.Token{}, ErrExpiryRequired
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		return auth.Token{}, fmt.Errorf("generate session token: %w", err)
+	}
+	digest := token.Digest()
+	tag, err := r.db.Exec(ctx, `
+		INSERT INTO forge_sessions (token_digest, membership_id, credential_version, expires_at)
+		SELECT $1, m.id, u.session_version, $4
+		FROM forge_memberships m
+		JOIN forge_users u ON u.id = m.user_id
+		JOIN forge_tenants t ON t.id = m.tenant_id
+		JOIN forge_organizations o ON o.id = t.organization_id
+		WHERE m.id = $2
+		  AND u.session_version = $3
+		  AND m.status = 'active'
+		  AND u.status = 'active'
+		  AND t.status = 'active'
+		  AND o.status = 'active'
+	`, digest[:], membershipID, credentialVersion, expiresAt.UTC())
+	if err != nil {
+		return auth.Token{}, postgres.Translate(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return auth.Token{}, auth.ErrCredentialsInvalid
 	}
 	return token, nil
 }
