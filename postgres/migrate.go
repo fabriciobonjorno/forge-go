@@ -29,9 +29,15 @@ func NewMigrator(cfg config.Database, migrations []migrate.Migration, logger *sl
 }
 
 // Commands returns the migrate and rollback subcommands for an application
-// binary; see migrate.Commands.
+// binary with one migration set; see migrate.Commands.
 func Commands(migrations fs.FS) []forge.Command {
-	return migrate.Commands(migrations, func(_ context.Context, cfg config.Database, loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
+	return CommandsFromSets(migrations)
+}
+
+// CommandsFromSets returns migrate and rollback commands over one globally
+// ordered history composed from independent migration filesystems.
+func CommandsFromSets(migrationSets ...fs.FS) []forge.Command {
+	return migrate.CommandsFromSets(migrationSets, func(_ context.Context, cfg config.Database, loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
 		return NewMigrator(cfg, loaded, logger)
 	})
 }

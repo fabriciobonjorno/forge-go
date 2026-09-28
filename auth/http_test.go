@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -155,5 +156,62 @@ func TestRequestSourceUsesPeerAddressNotForwardedHeaders(t *testing.T) {
 	request.Header.Set("X-Forwarded-For", "198.51.100.9")
 	if got := requestSource(request); got != "203.0.113.7" {
 		t.Fatalf("source=%q", got)
+	}
+}
+
+
+func TestAuditedLogoutRecordsCredentialDigest(t *testing.T) {
+	token, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoker := &revokeStub{}
+	auditor := &securityAuditorStub{}
+	handler, err := NewAuditedLogoutHandler(revoker, auditor)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	request.Header.Set("Authorization", "Bearer "+token.Reveal())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(auditor.events) != 1 ||
+		auditor.events[0].Kind != SecuritySessionRevoked ||
+		auditor.events[0].Outcome != SecurityOutcomeSucceeded ||
+		auditor.events[0].CredentialDigest != token.Digest() {
+		t.Fatalf("events=%+v", auditor.events)
+	}
+}
+
+func TestAuditedLogoutStaysIdempotentWhenAuditFails(t *testing.T) {
+	token, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoker := &revokeStub{}
+	auditor := &securityAuditorStub{err: errors.New("audit unavailable")}
+	handler, err := NewAuditedLogoutHandler(revoker, auditor)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	request.Header.Set("Authorization", "Bearer "+token.Reveal())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if revoker.token.Digest() != token.Digest() {
+		t.Fatalf("revoked=%v", revoker.token)
+	}
+	if len(auditor.events) != 1 {
+		t.Fatalf("audit calls=%d", len(auditor.events))
 	}
 }
