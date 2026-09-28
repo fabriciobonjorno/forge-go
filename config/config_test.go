@@ -16,6 +16,7 @@ func TestLoadWithLookup(t *testing.T) {
 		"FORGE_HTTP_TRANSPORT":           "trusted-proxy",
 		"FORGE_HTTP_READ_HEADER_TIMEOUT": "3s",
 		"FORGE_HTTP_MAX_BODY_BYTES":      "2048",
+		"FORGE_AUTH_MFA_KEY":             "example-mfa-key",
 	}
 	cfg, err := config.LoadWithLookup(func(key string) (string, bool) { value, ok := values[key]; return value, ok })
 	if err != nil {
@@ -23,6 +24,9 @@ func TestLoadWithLookup(t *testing.T) {
 	}
 	if cfg.Environment != config.Staging || cfg.HTTP.Address != "0.0.0.0:9000" || cfg.HTTP.ReadHeaderTimeout != 3*time.Second || cfg.HTTP.MaxBodyBytes != 2048 {
 		t.Fatalf("unexpected config: %#v", cfg)
+	}
+	if cfg.Auth.MFAKey.Reveal() != "example-mfa-key" || strings.Contains(cfg.Auth.MFAKey.String(), "example-mfa-key") {
+		t.Fatalf("MFA key was not loaded/redacted")
 	}
 }
 
