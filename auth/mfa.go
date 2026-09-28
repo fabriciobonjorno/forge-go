@@ -169,10 +169,36 @@ type MFAChallengeIssuer interface {
 	IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, sessionExpiresAt time.Time) (token MFAChallengeToken, expiresAt time.Time, err error)
 }
 
+type TOTPSecret struct {
+	value string
+}
+
+func (s TOTPSecret) Reveal() string { return s.value }
+
+func (TOTPSecret) String() string { return "[REDACTED]" }
+
+func (TOTPSecret) GoString() string { return "auth.TOTPSecret([REDACTED])" }
+
+func (TOTPSecret) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
+
+type TOTPProvisioningURI struct {
+	value string
+}
+
+func (u TOTPProvisioningURI) Reveal() string { return u.value }
+
+func (TOTPProvisioningURI) String() string { return "[REDACTED]" }
+
+func (TOTPProvisioningURI) GoString() string {
+	return "auth.TOTPProvisioningURI([REDACTED])"
+}
+
+func (TOTPProvisioningURI) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
+
 type TOTPEnrollment struct {
-	Secret         string
-	ProvisioningURI string
-	ExpiresAt      time.Time
+	Secret          TOTPSecret
+	ProvisioningURI TOTPProvisioningURI
+	ExpiresAt       time.Time
 }
 
 type MFACompletion struct {
@@ -292,8 +318,8 @@ func (s *MFAService) BeginTOTPEnrollment(ctx context.Context, subjectID uuid.UUI
 	query.Set("period", strconv.Itoa(totpPeriodSeconds))
 	label := url.PathEscape(issuer + ":" + account)
 	return TOTPEnrollment{
-		Secret:          encoded,
-		ProvisioningURI: "otpauth://totp/" + label + "?" + query.Encode(),
+		Secret:          TOTPSecret{value: encoded},
+		ProvisioningURI: TOTPProvisioningURI{value: "otpauth://totp/" + label + "?" + query.Encode()},
 		ExpiresAt:       expiresAt,
 	}, nil
 }
