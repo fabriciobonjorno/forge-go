@@ -40,6 +40,13 @@ bindings, requires a strictly greater TOTP counter, advances that counter and
 consumes the challenge. Only after this transaction succeeds is the normal
 opaque application session created.
 
+Session persistence is version-bound. Password lookup returns the
+`session_version` that was verified. Direct password session creation and MFA
+challenge issuance both require that version to remain current, and MFA
+completion creates its final session only at the version stored on the
+challenge. A password reset or global revocation racing any of those boundaries
+therefore prevents the stale authentication from creating a live session.
+
 ## Consequences
 
 - A password alone cannot create a session for MFA-enabled accounts.
