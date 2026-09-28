@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
-	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -170,44 +169,6 @@ func TestAESGCMSecretCipherBase64RequiresCanonical256BitKey(t *testing.T) {
 	} {
 		if _, err := NewAESGCMSecretCipherBase64(invalid); err == nil {
 			t.Fatalf("accepted invalid MFA key %q", invalid)
-		}
-	}
-}
-
-func TestDefaultMFAThrottleConfigIsValid(t *testing.T) {
-	config := DefaultMFAThrottleConfig()
-	if err := config.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	if config.Window != 5*time.Minute || config.AccountLimit != 5 || config.SourceLimit != 60 || config.MaxEntries != 20_000 {
-		t.Fatalf("config=%+v", config)
-	}
-}
-
-func TestAESGCMSecretCipherBase64RequiresCanonical256BitKey(t *testing.T) {
-	raw := []byte("0123456789abcdef0123456789abcdef")
-	encoded := base64.RawURLEncoding.EncodeToString(raw)
-	cipher, err := NewAESGCMSecretCipherBase64(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealed, err := cipher.Seal([]byte("seed material"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := cipher.Open(sealed)
-	if err != nil || string(opened) != "seed material" {
-		t.Fatalf("opened=%q err=%v", opened, err)
-	}
-
-	for _, invalid := range []string{
-		"",
-		encoded + "=",
-		base64.RawURLEncoding.EncodeToString(raw[:31]),
-		"not*base64url",
-	} {
-		if _, err := NewAESGCMSecretCipherBase64(invalid); err == nil {
-			t.Fatalf("accepted invalid MFA key")
 		}
 	}
 }
