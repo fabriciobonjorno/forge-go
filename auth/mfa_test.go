@@ -17,6 +17,7 @@ type mfaStoreStub struct {
 	pendingFound             bool
 	confirmResult            bool
 	confirmCounter           int64
+	backupDigests            []Digest
 	challenge                MFAChallengeRecord
 	challengeFound           bool
 	consumeResult            bool
