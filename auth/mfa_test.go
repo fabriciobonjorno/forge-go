@@ -51,11 +51,12 @@ func (s *mfaStoreStub) LoadPendingTOTP(context.Context, uuid.UUID) (TOTPSecretRe
 	return s.pending, s.pendingFound, nil
 }
 
-func (s *mfaStoreStub) ConfirmTOTPEnrollment(_ context.Context, _ uuid.UUID, _ Digest, counter int64) (bool, error) {
+func (s *mfaStoreStub) ConfirmTOTPEnrollment(_ context.Context, _ uuid.UUID, _ Digest, counter int64, backupCodeDigests []Digest) (bool, error) {
 	if s.err != nil {
 		return false, s.err
 	}
 	s.confirmCounter = counter
+	s.backupDigests = append([]Digest(nil), backupCodeDigests...)
 	return s.confirmResult, nil
 }
 
@@ -83,6 +84,16 @@ func (s *mfaStoreStub) ConsumeMFAChallenge(_ context.Context, _ Digest, _ Digest
 		return uuid.UUID{}, false, s.err
 	}
 	s.consumeCounter = counter
+	if !s.consumeResult {
+		return uuid.UUID{}, false, nil
+	}
+	return s.consumeMembership, true, nil
+}
+
+func (s *mfaStoreStub) ConsumeMFABackupChallenge(_ context.Context, _ Digest, _ Digest) (uuid.UUID, bool, error) {
+	if s.err != nil {
+		return uuid.UUID{}, false, s.err
+	}
 	if !s.consumeResult {
 		return uuid.UUID{}, false, nil
 	}
@@ -171,8 +182,17 @@ func TestTOTPEnrollmentRequiresConfirmationAndPreventsCodeReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := totpCode(rawSecret, uint64(now.Unix()/totpPeriodSeconds))
-	if err := service.ConfirmTOTPEnrollment(context.Background(), subjectID, code); err != nil {
+	confirmation, err := service.ConfirmTOTPEnrollment(context.Background(), subjectID, code)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(confirmation.BackupCodes) != DefaultMFABackupCodeCount || len(store.backupDigests) != DefaultMFABackupCodeCount {
+		t.Fatalf("backup codes=%d digests=%d", len(confirmation.BackupCodes), len(store.backupDigests))
+	}
+	for _, backupCode := range confirmation.BackupCodes {
+		if backupCode.Reveal() == "" || backupCode.String() != "[REDACTED]" {
+			t.Fatalf("backup code=%s reveal=%q", backupCode, backupCode.Reveal())
+		}
 	}
 	counter := now.Unix() / totpPeriodSeconds
 	if store.confirmCounter != counter {
