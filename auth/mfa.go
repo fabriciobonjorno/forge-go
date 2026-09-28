@@ -91,6 +91,16 @@ type AESGCMSecretCipher struct {
 // NewAESGCMSecretCipher builds a standard-library AES-256-GCM secret cipher.
 // Applications must load the 32-byte key from an external secret manager or
 // environment secret and must not store it in the identity database.
+// NewAESGCMSecretCipherBase64 decodes a canonical unpadded base64url key and
+// builds the standard AES-256-GCM cipher. Errors never echo the secret value.
+func NewAESGCMSecretCipherBase64(encoded string) (*AESGCMSecretCipher, error) {
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(raw) != 32 || base64.RawURLEncoding.EncodeToString(raw) != encoded {
+		return nil, errors.New("MFA encryption key must be canonical unpadded base64url for exactly 32 bytes")
+	}
+	return NewAESGCMSecretCipher(raw)
+}
+
 func NewAESGCMSecretCipher(key []byte) (*AESGCMSecretCipher, error) {
 	if len(key) != 32 {
 		return nil, errors.New("MFA encryption key must be exactly 32 bytes")
@@ -262,16 +272,23 @@ func WithMFAThrottler(throttler LoginThrottler) MFAOption {
 	}
 }
 
-func NewMFAService(store MFAStore, sessions CredentialSessionCreator, secretCipher SecretCipher, options ...MFAOption) (*MFAService, error) {
-	if store == nil || sessions == nil || secretCipher == nil {
-		return nil, errors.New("MFA store, session creator and secret cipher are required")
-	}
-	throttler, err := NewMemoryLoginThrottler(LoginThrottleConfig{
+// DefaultMFAThrottleConfig returns the process-local MFA challenge throttle
+// policy. Distributed deployments can use the same policy with a shared
+// LoginThrottler adapter.
+func DefaultMFAThrottleConfig() LoginThrottleConfig {
+	return LoginThrottleConfig{
 		Window:       defaultMFAChallengeTTL,
 		AccountLimit: 5,
 		SourceLimit:  60,
 		MaxEntries:   20_000,
-	})
+	}
+}
+
+func NewMFAService(store MFAStore, sessions CredentialSessionCreator, secretCipher SecretCipher, options ...MFAOption) (*MFAService, error) {
+	if store == nil || sessions == nil || secretCipher == nil {
+		return nil, errors.New("MFA store, session creator and secret cipher are required")
+	}
+	throttler, err := NewMemoryLoginThrottler(DefaultMFAThrottleConfig())
 	if err != nil {
 		return nil, err
 	}
