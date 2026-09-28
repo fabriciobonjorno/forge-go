@@ -64,6 +64,7 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 		return nil, errors.New("login service is required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
 		if err := requireSecureSameOrigin(r); err != nil {
 			web.Error(w, r, err)
 			return
@@ -97,9 +98,60 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			}
 			return
 		}
+		if result.MFARequired {
+			web.JSON(w, http.StatusAccepted, mfaRequiredResponse{
+				MFARequired:    true,
+				ChallengeToken: result.MFAChallenge.Reveal(),
+				ExpiresAt:      result.ExpiresAt,
+			})
+			return
+		}
 		setSessionCookies(w, result.Token.Reveal(), csrfToken, result.ExpiresAt)
-		noStore(w)
 		web.JSON(w, http.StatusOK, cookieLoginResponse{CSRFToken: csrfToken, ExpiresAt: result.ExpiresAt})
+	}), nil
+}
+
+// NewCookieMFACompletionHandler exchanges a valid MFA challenge for a secure
+// browser session. Like cookie login, it requires an HTTPS same-origin Origin
+// header because it creates ambient browser credentials.
+func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
+	if service == nil {
+		return nil, errors.New("MFA service is required")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
+		if err := requireSecureSameOrigin(r); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		var request mfaCompletionRequest
+		if err := web.DecodeJSON(r, &request); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		result, err := service.CompleteLogin(r.Context(), MFACompletion{
+			ChallengeToken: request.ChallengeToken,
+			Code:           request.Code,
+			Source:         requestSource(r),
+		})
+		if err != nil {
+			var throttled *LoginThrottledError
+			if errors.As(err, &throttled) {
+				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
+			}
+			web.Error(w, r, err)
+			return
+		}
+		csrfToken, err := newCSRFToken()
+		if err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		setSessionCookies(w, result.Token.Reveal(), csrfToken, result.ExpiresAt)
+		web.JSON(w, http.StatusOK, cookieLoginResponse{
+			CSRFToken: csrfToken,
+			ExpiresAt: result.ExpiresAt,
+		})
 	}), nil
 }
 
