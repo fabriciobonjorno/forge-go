@@ -69,8 +69,11 @@ func NewTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFA
 			principal.SubjectID().String(),
 		)
 		if err != nil {
-			web.Error(w, r, err)
-			return
+			_, operationApplied := logSecurityAuditFailure(r, err)
+			if !operationApplied {
+				web.Error(w, r, err)
+				return
+			}
 		}
 		web.JSON(w, http.StatusOK, totpEnrollmentResponse{
 			Secret:          enrollment.Secret.Reveal(),
@@ -102,8 +105,11 @@ func NewTOTPConfirmationHandler(service *MFAService) (http.Handler, error) {
 		}
 		confirmation, err := service.ConfirmTOTPEnrollment(r.Context(), principal.SubjectID(), request.Code)
 		if err != nil {
-			web.Error(w, r, err)
-			return
+			_, operationApplied := logSecurityAuditFailure(r, err)
+			if !operationApplied {
+				web.Error(w, r, err)
+				return
+			}
 		}
 		backupCodes := make([]string, len(confirmation.BackupCodes))
 		for index, backupCode := range confirmation.BackupCodes {
@@ -132,6 +138,7 @@ func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
 			Source:         requestSource(r),
 		})
 		if err != nil {
+			_, _ = logSecurityAuditFailure(r, err)
 			var throttled *LoginThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
@@ -186,8 +193,11 @@ func NewTOTPRotationHandler(service *MFAService, issuer string, authorizer MFACh
 			principal.SubjectID().String(),
 		)
 		if err != nil {
-			web.Error(w, r, err)
-			return
+			_, operationApplied := logSecurityAuditFailure(r, err)
+			if !operationApplied {
+				web.Error(w, r, err)
+				return
+			}
 		}
 		web.JSON(w, http.StatusOK, totpEnrollmentResponse{
 			Secret:          enrollment.Secret.Reveal(),
@@ -221,8 +231,11 @@ func NewTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChang
 		}
 		confirmation, err := service.ConfirmTOTPRotation(r.Context(), principal.SubjectID(), request.Code)
 		if err != nil {
-			web.Error(w, r, err)
-			return
+			_, operationApplied := logSecurityAuditFailure(r, err)
+			if !operationApplied {
+				web.Error(w, r, err)
+				return
+			}
 		}
 		backupCodes := make([]string, len(confirmation.BackupCodes))
 		for index, backupCode := range confirmation.BackupCodes {
@@ -250,8 +263,11 @@ func NewMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer) (
 			return
 		}
 		if err := service.DisableMFA(r.Context(), principal.SubjectID()); err != nil {
-			web.Error(w, r, err)
-			return
+			_, operationApplied := logSecurityAuditFailure(r, err)
+			if !operationApplied {
+				web.Error(w, r, err)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}), nil
