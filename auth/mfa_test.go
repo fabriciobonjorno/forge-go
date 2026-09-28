@@ -36,7 +36,7 @@ func (s *mfaStoreStub) BeginTOTPEnrollment(_ context.Context, subjectID uuid.UUI
 	}
 	s.pending = TOTPSecretRecord{
 		SubjectID:        subjectID,
-		SecretDigest:      digest,
+		SecretDigest:     digest,
 		SecretCiphertext: append([]byte(nil), ciphertext...),
 		ExpiresAt:        expiresAt,
 	}
@@ -196,8 +196,8 @@ func TestLoginWithMFAIssuesChallengeInsteadOfSession(t *testing.T) {
 	store := &loginStoreStub{
 		found: true,
 		identity: PasswordIdentity{
-			SubjectID:    uuid.MustNew(),
-			MembershipID: membershipID,
+			SubjectID:         uuid.MustNew(),
+			MembershipID:      membershipID,
 			PasswordHash:      hash,
 			CredentialVersion: 1,
 			MFARequired:       true,
