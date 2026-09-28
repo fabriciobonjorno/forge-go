@@ -234,7 +234,6 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"compose.yaml":               "mysql:8.4",
 				"app/bootstrap/bootstrap.go": "authpostgres",
 				"cmd/shop/main.go":           "authpostgres",
-				"compose.yaml":               "FORGE_AUTH_MFA_KEY",
 			},
 		},
 		{
