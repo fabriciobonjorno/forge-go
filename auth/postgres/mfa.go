@@ -192,10 +192,14 @@ func (r *Repository) CreateMFAChallenge(
 	ctx context.Context,
 	digest auth.Digest,
 	membershipID uuid.UUID,
+	credentialVersion int64,
 	expiresAt, sessionExpiresAt time.Time,
 ) error {
 	if membershipID.Version() != 7 || membershipID.Variant() != 2 {
 		return errors.New("MFA membership ID must be a UUIDv7")
+	}
+	if credentialVersion < 1 {
+		return errors.New("MFA credential version must be positive")
 	}
 	now := r.now()
 	if !expiresAt.After(now) || !sessionExpiresAt.After(now) {
@@ -237,19 +241,20 @@ func (r *Repository) CreateMFAChallenge(
 			INSERT INTO forge_mfa_challenges
 				(token_digest, membership_id, credential_version, factor_secret_digest,
 				 expires_at, session_expires_at)
-			SELECT $1, m.id, u.session_version, f.secret_digest, $3, $4
+			SELECT $1, m.id, u.session_version, f.secret_digest, $4, $5
 			FROM forge_memberships m
 			JOIN forge_users u ON u.id = m.user_id
 			JOIN forge_totp_factors f ON f.user_id = u.id
 			WHERE m.id = $2
+			  AND u.session_version = $3
 			  AND m.status = 'active'
 			  AND u.status = 'active'
-		`, digest[:], membershipID, expiresAt.UTC(), sessionExpiresAt.UTC())
+		`, digest[:], membershipID, credentialVersion, expiresAt.UTC(), sessionExpiresAt.UTC())
 		if err != nil {
 			return postgres.Translate(err)
 		}
 		if tag.RowsAffected() != 1 {
-			return ErrMFAIdentityRequired
+			return auth.ErrCredentialsInvalid
 		}
 		return nil
 	})
@@ -264,6 +269,7 @@ func (r *Repository) LoadMFAChallenge(ctx context.Context, digest auth.Digest) (
 		SELECT
 			u.id,
 			m.id,
+			c.credential_version,
 			f.secret_digest,
 			f.secret_ciphertext,
 			f.last_counter,
@@ -289,6 +295,7 @@ func (r *Repository) LoadMFAChallenge(ctx context.Context, digest auth.Digest) (
 	`, digest[:]).Scan(
 		&record.SubjectID,
 		&record.MembershipID,
+		&record.CredentialVersion,
 		&rawDigest,
 		&record.SecretCiphertext,
 		&record.LastCounter,
