@@ -43,7 +43,10 @@ streams are later hardening concerns.
 - The audit table is append-only by application contract, not by database-owner
   cryptographic enforcement.
 - Service-level instrumentation can be added without changing the storage
-  contract; Phase 3 login, logout, recovery/reset and MFA flows use it.
+  contract; Phase 3 login, logout, recovery/reset and MFA flows support it
+  when an auditor is configured. The generated PostgreSQL login, MFA, and
+  bearer logout flows wire the repository as auditor; framework cookie logout
+  can also be composed with an auditor.
 - `SecurityAuditError.OperationApplied` distinguishes an audit append failure
   after an irreversible state transition from one that prevented a security
   operation from completing. HTTP adapters log the former while preserving the

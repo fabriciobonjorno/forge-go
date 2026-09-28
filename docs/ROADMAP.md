@@ -171,12 +171,25 @@ Implemented foundation:
   one-time backup codes, factor rotation/disable, credential-version-bound
   session creation, and bearer/browser completion flows
   ([ADR 0014](adr/0014-totp-mfa.md), [ADR 0015](adr/0015-mfa-factor-lifecycle.md)).
+- PostgreSQL identity wiring in generated applications, including migrations,
+  login/logout/session routes, optional MFA challenge completion, and the
+  `FORGE_AUTH_MFA_KEY` configuration.
+- Structured audit events for login, logout, password recovery/reset, MFA
+  challenge and factor lifecycle operations. Audit persistence is opt-in for
+  framework services; generated PostgreSQL login, MFA, and logout flows wire
+  the repository as their auditor.
 
-Still planned on the main line: full audit instrumentation of remaining
-identity flows, generated application wiring and MFA key configuration, and a
-decided database-enforcement strategy for MySQL, MariaDB and SQLite. See
-[AUTHENTICATION.md](AUTHENTICATION.md), [MFA.md](MFA.md), and
-[MULTI_TENANCY.md](MULTI_TENANCY.md).
+Remaining boundaries: generated applications do not choose account
+provisioning, password-recovery delivery, browser-cookie routes, or MFA
+enrollment/rotation step-up policy. Those framework primitives require
+application-specific decisions and are documented in
+[AUTHENTICATION.md](AUTHENTICATION.md) and [MFA.md](MFA.md). PostgreSQL is the
+only built-in identity persistence adapter and the only adapter with a
+database-enforced RLS helper. MySQL, MariaDB, and SQLite use the documented
+application-layer tenant-scoping contract; Forge does not claim equivalent
+database enforcement ([MULTI_TENANCY.md](MULTI_TENANCY.md)). Broader audit
+coverage for authorization denials and rejected session resolution remains a
+separate scope decision.
 
 ## Phase 4 - Asynchronous work
 

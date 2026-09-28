@@ -179,7 +179,16 @@ See [ADR 0012](adr/0012-cookie-sessions-and-csrf.md) and [MFA.md](MFA.md).
 
 ## Remaining Phase 3 work
 
-Generated application wiring, full audit instrumentation of the remaining
-identity flows, encryption-key configuration for generated MFA deployments,
-and equivalent database-enforcement strategies for MySQL, MariaDB and SQLite
-are still planned.
+Generated PostgreSQL applications wire the identity repository, login,
+logout, current-session, and (when `FORGE_AUTH_MFA_KEY` is set) MFA challenge
+completion. The key must be canonical unpadded base64url for 32 random bytes;
+use a secret manager in deployed environments.
+
+Account provisioning, recovery delivery, browser-cookie route selection, and
+MFA enrollment/rotation step-up policy remain application-specific. Framework
+services support structured auditing; configure an auditor when composing
+recovery and MFA services outside the generated defaults. PostgreSQL is the
+only built-in identity persistence adapter. Other database adapters follow
+the application-layer tenant-scoping contract in
+[MULTI_TENANCY.md](MULTI_TENANCY.md); Forge does not provide database-enforced
+tenant isolation for them.
