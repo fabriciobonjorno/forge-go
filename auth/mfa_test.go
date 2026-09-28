@@ -23,9 +23,10 @@ type mfaStoreStub struct {
 	consumeMembership    uuid.UUID
 	consumeCounter       int64
 	createdChallenge     Digest
-	createdMembership    uuid.UUID
-	createdExpiresAt     time.Time
-	createdSessionExpiry time.Time
+	createdMembership        uuid.UUID
+	createdCredentialVersion int64
+	createdExpiresAt         time.Time
+	createdSessionExpiry     time.Time
 	err                  error
 }
 
@@ -58,12 +59,13 @@ func (s *mfaStoreStub) ConfirmTOTPEnrollment(_ context.Context, _ uuid.UUID, _ D
 	return s.confirmResult, nil
 }
 
-func (s *mfaStoreStub) CreateMFAChallenge(_ context.Context, digest Digest, membershipID uuid.UUID, expiresAt, sessionExpiresAt time.Time) error {
+func (s *mfaStoreStub) CreateMFAChallenge(_ context.Context, digest Digest, membershipID uuid.UUID, credentialVersion int64, expiresAt, sessionExpiresAt time.Time) error {
 	if s.err != nil {
 		return s.err
 	}
 	s.createdChallenge = digest
 	s.createdMembership = membershipID
+	s.createdCredentialVersion = credentialVersion
 	s.createdExpiresAt = expiresAt
 	s.createdSessionExpiry = sessionExpiresAt
 	return nil
