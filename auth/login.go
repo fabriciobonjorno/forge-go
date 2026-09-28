@@ -239,7 +239,10 @@ func (s *LoginService) recordLoginEvent(
 	if key.HasSource {
 		event.SourceDigest = Digest(key.Source)
 	}
-	return s.auditor.RecordSecurityEvent(ctx, event)
+	if err := s.auditor.RecordSecurityEvent(ctx, event); err != nil {
+		return &SecurityAuditError{Cause: err}
+	}
+	return nil
 }
 
 func normalizeLogin(email, tenant string) (string, string, bool) {
