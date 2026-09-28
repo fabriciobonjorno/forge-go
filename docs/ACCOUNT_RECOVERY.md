@@ -48,9 +48,12 @@ For multi-replica PostgreSQL applications, use
 while recovery keys use a separate hash domain and do not collide with login
 keys.
 
-`RecoverySender` should enqueue delivery and return promptly. A synchronous
-SMTP sender can create a measurable timing difference between known and unknown
-identities even though the HTTP response is otherwise uniform.
+`RecoverySender` should enqueue delivery and return promptly. If delivery fails,
+`RecoveryService.Request` returns a typed `RecoveryDeliveryError` for internal
+observability and invalidates the just-issued token. The public HTTP handler
+still returns the same `202 accepted` response, so an email-provider outage
+does not become an account-enumeration oracle. Sender implementations should
+log/alert their own delivery failures.
 
 ## Resetting the password
 
