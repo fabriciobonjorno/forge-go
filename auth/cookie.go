@@ -74,11 +74,6 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		csrfToken, err := newCSRFToken()
-		if err != nil {
-			web.Error(w, r, err)
-			return
-		}
 		result, err := service.Login(r.Context(), LoginInput{
 			Email:      request.Email,
 			Password:   request.Password,
@@ -104,6 +99,11 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 				ChallengeToken: result.MFAChallenge.Reveal(),
 				ExpiresAt:      result.ExpiresAt,
 			})
+			return
+		}
+		csrfToken, err := newCSRFToken()
+		if err != nil {
+			web.Error(w, r, err)
 			return
 		}
 		setSessionCookies(w, result.Token.Reveal(), csrfToken, result.ExpiresAt)
