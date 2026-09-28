@@ -67,6 +67,7 @@ type LoginService struct {
 	passwords PasswordStore
 	sessions  SessionCreator
 	throttler LoginThrottler
+	auditor   SecurityAuditor
 	now       func() time.Time
 	ttl       time.Duration
 }
@@ -99,6 +100,16 @@ func WithLoginThrottler(throttler LoginThrottler) LoginOption {
 			return errors.New("login throttler is required")
 		}
 		service.throttler = throttler
+		return nil
+	}
+}
+
+func WithSecurityAuditor(auditor SecurityAuditor) LoginOption {
+	return func(service *LoginService) error {
+		if auditor == nil {
+			return errors.New("security auditor is required")
+		}
+		service.auditor = auditor
 		return nil
 	}
 }
@@ -144,7 +155,9 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, err
 	}
 	if !decision.Allowed {
-		return LoginResult{}, &LoginThrottledError{RetryAfter: decision.RetryAfter}
+		throttled := &LoginThrottledError{RetryAfter: decision.RetryAfter}
+		auditErr := s.recordLoginEvent(ctx, SecurityLoginThrottled, SecurityOutcomeDenied, uuid.UUID{}, uuid.UUID{}, throttleKey)
+		return LoginResult{}, errors.Join(throttled, auditErr)
 	}
 
 	identity, found, err := s.passwords.LookupPassword(ctx, email, tenant)
@@ -156,7 +169,8 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		if verifyErr != nil {
 			return LoginResult{}, verifyErr
 		}
-		return LoginResult{}, ErrCredentialsInvalid
+		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, uuid.UUID{}, uuid.UUID{}, throttleKey)
+		return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 	}
 	if identity.SubjectID.Version() != 7 || identity.SubjectID.Variant() != 2 ||
 		identity.MembershipID.Version() != 7 || identity.MembershipID.Variant() != 2 {
@@ -168,7 +182,8 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, err
 	}
 	if !match {
-		return LoginResult{}, ErrCredentialsInvalid
+		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, identity.SubjectID, identity.MembershipID, throttleKey)
+		return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 	}
 	if needsRehash {
 		nextHash, err := HashPassword(input.Password)
@@ -182,7 +197,8 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		if !replaced {
 			// A concurrent password reset or credential update won the race.
 			// Do not issue a session from the stale credential we verified.
-			return LoginResult{}, ErrCredentialsInvalid
+			auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, identity.SubjectID, identity.MembershipID, throttleKey)
+			return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 		}
 	}
 
@@ -194,7 +210,36 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 	if err != nil {
 		return LoginResult{}, err
 	}
+	if err := s.recordLoginEvent(ctx, SecurityLoginSucceeded, SecurityOutcomeSucceeded, identity.SubjectID, identity.MembershipID, throttleKey); err != nil {
+		if revoker, ok := s.sessions.(SessionRevoker); ok {
+			err = errors.Join(err, revoker.RevokeSession(ctx, token))
+		}
+		return LoginResult{}, err
+	}
 	return LoginResult{Token: token, ExpiresAt: expiresAt}, nil
+}
+
+func (s *LoginService) recordLoginEvent(
+	ctx context.Context,
+	kind SecurityEventKind,
+	outcome SecurityOutcome,
+	subjectID, membershipID uuid.UUID,
+	key LoginThrottleKey,
+) error {
+	if s.auditor == nil {
+		return nil
+	}
+	event := SecurityEvent{
+		Kind:          kind,
+		Outcome:       outcome,
+		SubjectID:     subjectID,
+		MembershipID:  membershipID,
+		AccountDigest: Digest(key.Account),
+	}
+	if key.HasSource {
+		event.SourceDigest = Digest(key.Source)
+	}
+	return s.auditor.RecordSecurityEvent(ctx, event)
 }
 
 func normalizeLogin(email, tenant string) (string, string, bool) {
