@@ -27,13 +27,13 @@ import (
 )
 
 const (
-	totpSecretBytes       = 20
-	totpDigits            = 6
-	totpPeriodSeconds     = 30
-	defaultTOTPEnrollTTL  = 10 * time.Minute
+	totpSecretBytes        = 20
+	totpDigits             = 6
+	totpPeriodSeconds      = 30
+	defaultTOTPEnrollTTL   = 10 * time.Minute
 	defaultMFAChallengeTTL = 5 * time.Minute
-	minMFAChallengeTTL    = time.Minute
-	maxMFAChallengeTTL    = 15 * time.Minute
+	minMFAChallengeTTL     = time.Minute
+	maxMFAChallengeTTL     = 15 * time.Minute
 )
 
 var (
