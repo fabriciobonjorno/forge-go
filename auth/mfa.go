@@ -145,6 +145,7 @@ type MFAChallengeRecord struct {
 	SecretCiphertext []byte
 	LastCounter      int64
 	ExpiresAt        time.Time
+	SessionExpiresAt time.Time
 }
 
 // MFAStore persists pending/active TOTP factors and one-time login challenges.
@@ -155,7 +156,7 @@ type MFAStore interface {
 	LoadPendingTOTP(ctx context.Context, subjectID uuid.UUID) (record TOTPSecretRecord, found bool, err error)
 	ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, counter int64) (confirmed bool, err error)
 
-	CreateMFAChallenge(ctx context.Context, digest Digest, membershipID uuid.UUID, expiresAt time.Time) error
+	CreateMFAChallenge(ctx context.Context, digest Digest, membershipID uuid.UUID, expiresAt, sessionExpiresAt time.Time) error
 	LoadMFAChallenge(ctx context.Context, digest Digest) (record MFAChallengeRecord, found bool, err error)
 	ConsumeMFAChallenge(ctx context.Context, digest Digest, secretDigest Digest, counter int64) (membershipID uuid.UUID, consumed bool, err error)
 }
@@ -163,7 +164,7 @@ type MFAStore interface {
 // MFAChallengeIssuer is the narrow LoginService dependency used after a
 // correct password for an account that has MFA enabled.
 type MFAChallengeIssuer interface {
-	IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID) (token MFAChallengeToken, expiresAt time.Time, err error)
+	IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, sessionExpiresAt time.Time) (token MFAChallengeToken, expiresAt time.Time, err error)
 }
 
 type TOTPEnrollment struct {
@@ -322,16 +323,20 @@ func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.U
 	return nil
 }
 
-func (s *MFAService) IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID) (MFAChallengeToken, time.Time, error) {
+func (s *MFAService) IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, sessionExpiresAt time.Time) (MFAChallengeToken, time.Time, error) {
 	if membershipID.Version() != 7 || membershipID.Variant() != 2 {
 		return MFAChallengeToken{}, time.Time{}, errors.New("MFA membership ID must be a UUIDv7")
+	}
+	now := s.now().UTC()
+	if !sessionExpiresAt.After(now) {
+		return MFAChallengeToken{}, time.Time{}, errors.New("MFA session expiry must be in the future")
 	}
 	token, err := NewMFAChallengeToken()
 	if err != nil {
 		return MFAChallengeToken{}, time.Time{}, err
 	}
-	expiresAt := s.now().UTC().Add(s.challengeTTL)
-	if err := s.store.CreateMFAChallenge(ctx, token.Digest(), membershipID, expiresAt); err != nil {
+	expiresAt := now.Add(s.challengeTTL)
+	if err := s.store.CreateMFAChallenge(ctx, token.Digest(), membershipID, expiresAt, sessionExpiresAt.UTC()); err != nil {
 		return MFAChallengeToken{}, time.Time{}, err
 	}
 	return token, expiresAt, nil
@@ -360,7 +365,8 @@ func (s *MFAService) CompleteLogin(ctx context.Context, completion MFACompletion
 		return LoginResult{}, err
 	}
 	now := s.now().UTC()
-	if !found || record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
+	if !found || record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) ||
+		record.SessionExpiresAt.IsZero() || !now.Before(record.SessionExpiresAt) {
 		return LoginResult{}, ErrMFAInvalid
 	}
 	secret, err := s.openTOTPSecret(record.SecretCiphertext, record.SecretDigest)
@@ -381,7 +387,7 @@ func (s *MFAService) CompleteLogin(ctx context.Context, completion MFACompletion
 	if err := s.throttler.Success(ctx, key); err != nil {
 		return LoginResult{}, err
 	}
-	expiresAt := now.Add(defaultSessionTTL)
+	expiresAt := record.SessionExpiresAt.UTC()
 	session, err := s.sessions.CreateSession(ctx, membershipID, expiresAt)
 	if err != nil {
 		return LoginResult{}, err
