@@ -9,7 +9,7 @@ PostgreSQL persistence through `auth/postgres.Repository`.
 
 - event kind and outcome;
 - optional actor, subject, and membership UUIDv7 identifiers;
-- optional account/source SHA-256 digests;
+- optional account/source/credential SHA-256 digests;
 - optional occurrence time.
 
 There is no arbitrary metadata map. Passwords, bearer tokens, password-recovery
@@ -31,7 +31,7 @@ The table stores:
 - UUIDv7 event ID;
 - kind and outcome;
 - actor/subject/membership identifiers without foreign keys;
-- account/source digests;
+- account/source/credential digests;
 - request ID;
 - occurrence timestamp.
 
