@@ -27,10 +27,11 @@ var tenantSlugPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
 // PasswordIdentity is the minimum server-side state needed to verify a login.
 // PasswordHash must never be returned to clients or logs.
 type PasswordIdentity struct {
-	SubjectID    uuid.UUID
-	MembershipID uuid.UUID
-	PasswordHash string
-	MFARequired  bool
+	SubjectID        uuid.UUID
+	MembershipID     uuid.UUID
+	PasswordHash     string
+	CredentialVersion int64
+	MFARequired      bool
 }
 
 // PasswordStore loads current credential state and conditionally upgrades a
@@ -45,6 +46,13 @@ type PasswordStore interface {
 // account state. The returned Token is the one-time plaintext credential.
 type SessionCreator interface {
 	CreateSession(ctx context.Context, membershipID uuid.UUID, expiresAt time.Time) (Token, error)
+}
+
+// CredentialSessionCreator creates a session only if credentialVersion is still
+// current. Password login and MFA use this to close the race between verifying
+// credentials and persisting the resulting session.
+type CredentialSessionCreator interface {
+	CreateSessionAtVersion(ctx context.Context, membershipID uuid.UUID, credentialVersion int64, expiresAt time.Time) (Token, error)
 }
 
 // SessionRevoker invalidates one opaque session credential.
@@ -68,7 +76,7 @@ type LoginResult struct {
 
 type LoginService struct {
 	passwords PasswordStore
-	sessions  SessionCreator
+	sessions  CredentialSessionCreator
 	throttler LoginThrottler
 	mfa       MFAChallengeIssuer
 	now       func() time.Time
@@ -117,7 +125,7 @@ func WithMFAChallengeIssuer(issuer MFAChallengeIssuer) LoginOption {
 	}
 }
 
-func NewLoginService(passwords PasswordStore, sessions SessionCreator, options ...LoginOption) (*LoginService, error) {
+func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator, options ...LoginOption) (*LoginService, error) {
 	if passwords == nil || sessions == nil {
 		return nil, errors.New("password store and session creator are required")
 	}
@@ -173,7 +181,8 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, ErrCredentialsInvalid
 	}
 	if identity.SubjectID.Version() != 7 || identity.SubjectID.Variant() != 2 ||
-		identity.MembershipID.Version() != 7 || identity.MembershipID.Variant() != 2 {
+		identity.MembershipID.Version() != 7 || identity.MembershipID.Variant() != 2 ||
+		identity.CredentialVersion < 1 {
 		return LoginResult{}, errors.New("password store returned an invalid identity")
 	}
 
@@ -208,7 +217,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		if s.mfa == nil {
 			return LoginResult{}, errors.New("MFA is required but no challenge issuer is configured")
 		}
-		challenge, challengeExpiresAt, err := s.mfa.IssueMFAChallenge(ctx, identity.MembershipID, expiresAt)
+		challenge, challengeExpiresAt, err := s.mfa.IssueMFAChallenge(ctx, identity.MembershipID, identity.CredentialVersion, expiresAt)
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -218,7 +227,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 			ExpiresAt:    challengeExpiresAt,
 		}, nil
 	}
-	token, err := s.sessions.CreateSession(ctx, identity.MembershipID, expiresAt)
+	token, err := s.sessions.CreateSessionAtVersion(ctx, identity.MembershipID, identity.CredentialVersion, expiresAt)
 	if err != nil {
 		return LoginResult{}, err
 	}
