@@ -169,7 +169,7 @@ func TestMFAChallengeDiesAfterCredentialVersionChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(30 * time.Second)
-	challenge, _, err := mfa.IssueMFAChallenge(ctx, membershipID, now.Add(time.Hour))
+	challenge, _, err := mfa.IssueMFAChallenge(ctx, membershipID, 2, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
