@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
 	"errors"
@@ -256,4 +257,111 @@ func testTOTPCode(secret []byte, now time.Time) string {
 		(uint32(sum[offset+2]) << 8) |
 		uint32(sum[offset+3])) % 1_000_000
 	return fmt.Sprintf("%06d", value)
+}
+
+
+func TestMFARotationAndDisableAgainstPostgres(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	passwordHash, err := auth.HashPassword("correct-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES ($1, 'rotate@example.com', 'rotate@example.com', $2)", userID, passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_organizations (id, name) VALUES ($1, 'Rotate')", orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_tenants (id, organization_id, slug) VALUES ($1, $2, 'rotate')", tenantID, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO forge_memberships (id, user_id, tenant_id) VALUES ($1, $2, $3)", membershipID, userID, tenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDigest := sha256.Sum256([]byte("old-totp-secret"))
+	if _, err := db.Exec(ctx, `
+		INSERT INTO forge_totp_factors
+			(user_id, secret_digest, secret_ciphertext, last_counter)
+		VALUES ($1, $2, $3, 7)
+	`, userID, oldDigest[:], []byte("old-ciphertext")); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSession, err := repo.CreateSession(ctx, membershipID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newDigest := sha256.Sum256([]byte("new-totp-secret"))
+	if err := repo.BeginTOTPRotation(ctx, userID, newDigest, []byte("new-ciphertext"), time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	backupDigests := make([]auth.Digest, auth.DefaultMFABackupCodeCount)
+	for i := range backupDigests {
+		backupDigests[i] = sha256.Sum256([]byte(fmt.Sprintf("backup-%d", i)))
+	}
+	confirmed, err := repo.ConfirmTOTPRotation(ctx, userID, newDigest, 123, backupDigests)
+	if err != nil || !confirmed {
+		t.Fatalf("confirmed=%v err=%v", confirmed, err)
+	}
+
+	var (
+		storedDigest []byte
+		lastCounter  int64
+		version      int64
+		backupCount  int
+	)
+	if err := db.QueryRow(ctx, "SELECT secret_digest, last_counter FROM forge_totp_factors WHERE user_id = $1", userID).Scan(&storedDigest, &lastCounter); err != nil {
+		t.Fatal(err)
+	}
+	if string(storedDigest) != string(newDigest[:]) || lastCounter != 123 {
+		t.Fatalf("factor digest=%x counter=%d", storedDigest, lastCounter)
+	}
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM forge_mfa_backup_codes WHERE user_id = $1 AND consumed_at IS NULL", userID).Scan(&backupCount); err != nil {
+		t.Fatal(err)
+	}
+	if backupCount != auth.DefaultMFABackupCodeCount {
+		t.Fatalf("backup count=%d", backupCount)
+	}
+	if err := db.QueryRow(ctx, "SELECT session_version FROM forge_users WHERE id = $1", userID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 {
+		t.Fatalf("session version after rotation=%d", version)
+	}
+	if _, found, err := repo.ResolveSession(ctx, oldSession.Digest()); err != nil || found {
+		t.Fatalf("pre-rotation session found=%v err=%v", found, err)
+	}
+
+	newSession, err := repo.CreateSession(ctx, membershipID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := repo.DisableMFA(ctx, userID)
+	if err != nil || !disabled {
+		t.Fatalf("disabled=%v err=%v", disabled, err)
+	}
+	var factorCount int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM forge_totp_factors WHERE user_id = $1", userID).Scan(&factorCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM forge_mfa_backup_codes WHERE user_id = $1", userID).Scan(&backupCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, "SELECT session_version FROM forge_users WHERE id = $1", userID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if factorCount != 0 || backupCount != 0 || version != 3 {
+		t.Fatalf("factor=%d backup=%d version=%d", factorCount, backupCount, version)
+	}
+	if _, found, err := repo.ResolveSession(ctx, newSession.Digest()); err != nil || found {
+		t.Fatalf("pre-disable session found=%v err=%v", found, err)
+	}
 }

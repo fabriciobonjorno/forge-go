@@ -40,6 +40,7 @@ var (
 	ErrMFAInvalid           = fault.New("mfa_invalid", "multi-factor code or challenge is invalid or expired", fault.CategoryUnauthorized, 0)
 	ErrMFAEnrollmentInvalid = fault.New("mfa_enrollment_invalid", "MFA enrollment is invalid or expired", fault.CategoryInvalid, 0)
 	ErrMFAAlreadyEnabled    = fault.New("mfa_already_enabled", "MFA is already enabled", fault.CategoryConflict, 0)
+	ErrMFANotEnabled        = fault.New("mfa_not_enabled", "MFA is not enabled", fault.CategoryConflict, 0)
 )
 
 type MFAChallengeToken struct {
@@ -167,6 +168,12 @@ type MFAStore interface {
 
 // MFAChallengeIssuer is the narrow LoginService dependency used after a
 // correct password for an account that has MFA enabled.
+type MFALifecycleStore interface {
+	BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, secretCiphertext []byte, expiresAt time.Time) error
+	ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, counter int64, backupCodeDigests []Digest) (confirmed bool, err error)
+	DisableMFA(ctx context.Context, subjectID uuid.UUID) (disabled bool, err error)
+}
+
 type MFAChallengeIssuer interface {
 	IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, credentialVersion int64, sessionExpiresAt time.Time) (token MFAChallengeToken, expiresAt time.Time, err error)
 }
@@ -292,6 +299,14 @@ func NewMFAService(store MFAStore, sessions CredentialSessionCreator, secretCiph
 // already-active factor. The caller must be an authenticated account-management
 // flow; this service intentionally does not infer identity from HTTP input.
 func (s *MFAService) BeginTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, issuer, account string) (TOTPEnrollment, error) {
+	return s.beginTOTP(ctx, subjectID, issuer, account, false)
+}
+
+func (s *MFAService) BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, issuer, account string) (TOTPEnrollment, error) {
+	return s.beginTOTP(ctx, subjectID, issuer, account, true)
+}
+
+func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer, account string, rotation bool) (TOTPEnrollment, error) {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return TOTPEnrollment{}, errors.New("MFA subject ID must be a UUIDv7")
 	}
@@ -311,8 +326,18 @@ func (s *MFAService) BeginTOTPEnrollment(ctx context.Context, subjectID uuid.UUI
 	}
 	digest := sha256.Sum256(secret)
 	expiresAt := s.now().UTC().Add(s.enrollTTL)
-	if err := s.store.BeginTOTPEnrollment(ctx, subjectID, digest, ciphertext, expiresAt); err != nil {
-		return TOTPEnrollment{}, err
+	if rotation {
+		store, err := s.lifecycleStore()
+		if err != nil {
+			return TOTPEnrollment{}, err
+		}
+		if err := store.BeginTOTPRotation(ctx, subjectID, digest, ciphertext, expiresAt); err != nil {
+			return TOTPEnrollment{}, err
+		}
+	} else {
+		if err := s.store.BeginTOTPEnrollment(ctx, subjectID, digest, ciphertext, expiresAt); err != nil {
+			return TOTPEnrollment{}, err
+		}
 	}
 
 	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
@@ -359,6 +384,67 @@ func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.U
 		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
 	}
 	return TOTPConfirmation{BackupCodes: backupCodes}, nil
+}
+
+func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
+	record, found, err := s.store.LoadPendingTOTP(ctx, subjectID)
+	if err != nil {
+		return TOTPConfirmation{}, err
+	}
+	now := s.now().UTC()
+	if !found || record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
+		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
+	}
+	secret, err := s.openTOTPSecret(record.SecretCiphertext, record.SecretDigest)
+	if err != nil {
+		return TOTPConfirmation{}, err
+	}
+	counter, ok := matchTOTPCounter(secret, code, now, -1)
+	if !ok {
+		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
+	}
+	backupCodes, backupDigests, err := newMFABackupCodes(DefaultMFABackupCodeCount)
+	if err != nil {
+		return TOTPConfirmation{}, err
+	}
+	store, err := s.lifecycleStore()
+	if err != nil {
+		return TOTPConfirmation{}, err
+	}
+	confirmed, err := store.ConfirmTOTPRotation(ctx, subjectID, record.SecretDigest, counter, backupDigests)
+	if err != nil {
+		return TOTPConfirmation{}, err
+	}
+	if !confirmed {
+		return TOTPConfirmation{}, ErrMFAEnrollmentInvalid
+	}
+	return TOTPConfirmation{BackupCodes: backupCodes}, nil
+}
+
+func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID) error {
+	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
+		return errors.New("MFA subject ID must be a UUIDv7")
+	}
+	store, err := s.lifecycleStore()
+	if err != nil {
+		return err
+	}
+	disabled, err := store.DisableMFA(ctx, subjectID)
+	if err != nil {
+		return err
+	}
+	if !disabled {
+		return ErrMFANotEnabled
+	}
+	return nil
+}
+
+func (s *MFAService) lifecycleStore() (MFALifecycleStore, error) {
+	store, ok := s.store.(MFALifecycleStore)
+	if !ok {
+		return nil, errors.New("MFA lifecycle is not supported by the configured store")
+	}
+	return store, nil
 }
 
 func (s *MFAService) IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, credentialVersion int64, sessionExpiresAt time.Time) (MFAChallengeToken, time.Time, error) {
