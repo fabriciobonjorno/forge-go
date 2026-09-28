@@ -164,6 +164,9 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Tenant omitted or forged | E, I | `tenancy.Require` has no default. Authentication installs the tenant returned by the server-side resolver; client tenant headers are ignored. |
 | Tenant leaks through a pooled PostgreSQL connection | I, E | `InTenantTx` sets `forge.tenant_id` transaction-locally on every retry. Integration tests prove RLS read/write isolation and that the setting is cleared. The serving role must not be superuser or `BYPASSRLS`. |
 | False database-isolation assurance | I, E | Forge explicitly makes no RLS-equivalent claim for MySQL, MariaDB or SQLite; their repositories must filter every operation by tenant. |
+| Secrets accidentally persisted in audit records | I | `auth.SecurityEvent` has a closed field set with identifiers and SHA-256 digests only; there is no arbitrary metadata/payload map for passwords, bearer tokens, reset links, TOTP seeds, challenges, or backup codes. |
+| Audit history lost when identities are deleted | R | PostgreSQL audit actor/subject/membership identifiers intentionally have no foreign keys, so history survives identity cleanup. |
+| Audit records tampered with by a database owner | T, R | Not prevented cryptographically. Forge exposes append-only application APIs, but a database owner can still alter/delete rows; external immutable shipping/signing remains a hardening concern. |
 
 ## Future components (Planned)
 
