@@ -46,7 +46,7 @@ func (m *Middleware) AuthenticateCookie(next http.Handler) http.Handler {
 			web.Error(w, r, ErrCredentialsInvalid)
 			return
 		}
-		ctx, err := m.authenticateContext(r.Context(), cookies[0].Value)
+		ctx, err := m.authenticateContext(r, cookies[0].Value)
 		if err != nil {
 			web.Error(w, r, err)
 			return
