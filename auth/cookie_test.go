@@ -171,6 +171,41 @@ func TestAuthenticateCookieRejectsDuplicateCredentials(t *testing.T) {
 	}
 }
 
+func TestAuthenticateCookieAuditsRejectedSession(t *testing.T) {
+	t.Parallel()
+	token, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditor := &securityAuditorStub{}
+	middleware, err := NewMiddleware(
+		ResolverFunc(func(_ context.Context, digest Digest) (Session, bool, error) {
+			if digest != token.Digest() {
+				t.Fatalf("digest=%x", digest)
+			}
+			return Session{}, false, nil
+		}),
+		WithAuthenticationAuditor(auditor),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/private", nil)
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token.Reveal()})
+	recorder := httptest.NewRecorder()
+	middleware.AuthenticateCookie(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler called for rejected cookie session")
+	})).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || len(auditor.events) != 1 {
+		t.Fatalf("status=%d events=%+v body=%s", recorder.Code, auditor.events, recorder.Body.String())
+	}
+	event := auditor.events[0]
+	if event.Kind != SecuritySessionRejected || event.Outcome != SecurityOutcomeDenied ||
+		event.CredentialDigest != token.Digest() || event.ActorID != (uuid.UUID{}) || event.SubjectID != (uuid.UUID{}) {
+		t.Fatalf("event=%+v", event)
+	}
+}
+
 func TestRequireCSRFProtectsUnsafeMethods(t *testing.T) {
 	token, err := newCSRFToken()
 	if err != nil {

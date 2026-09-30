@@ -158,6 +158,148 @@ func TestRequirePermission(t *testing.T) {
 	}
 }
 
+func TestMiddlewareAuditsRejectedSessionsWithoutChangingUnauthorizedResponse(t *testing.T) {
+	t.Parallel()
+	token, _ := fixture(t)
+	auditor := &recordingAuditor{}
+	middleware, err := auth.NewMiddleware(
+		auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+			return auth.Session{}, false, nil
+		}),
+		auth.WithAuthenticationAuditor(auditor),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/private", nil)
+	request.Header.Set("Authorization", "Bearer "+token.Reveal())
+	recorder := httptest.NewRecorder()
+	middleware.Authenticate(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler called for rejected session")
+	})).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("WWW-Authenticate") == "" {
+		t.Fatalf("status=%d authenticate=%q body=%s", recorder.Code, recorder.Header().Get("WWW-Authenticate"), recorder.Body.String())
+	}
+	if len(auditor.events) != 1 {
+		t.Fatalf("events=%+v", auditor.events)
+	}
+	event := auditor.events[0]
+	if event.Kind != auth.SecuritySessionRejected || event.Outcome != auth.SecurityOutcomeDenied ||
+		event.CredentialDigest != token.Digest() || event.ActorID != (uuid.UUID{}) || event.SubjectID != (uuid.UUID{}) ||
+		event.MembershipID != (uuid.UUID{}) || event.AccountDigest != (auth.Digest{}) || event.SourceDigest != (auth.Digest{}) {
+		t.Fatalf("event=%+v", event)
+	}
+}
+
+func TestMiddlewareAuditFailureDoesNotChangeUnauthorizedResponse(t *testing.T) {
+	t.Parallel()
+	token, _ := fixture(t)
+	auditor := &recordingAuditor{err: errors.New("audit unavailable")}
+	middleware, err := auth.NewMiddleware(
+		auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+			return auth.Session{}, false, nil
+		}),
+		auth.WithAuthenticationAuditor(auditor),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/private", nil)
+	request.Header.Set("Authorization", "Bearer "+token.Reveal())
+	recorder := httptest.NewRecorder()
+	middleware.Authenticate(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler called for rejected session")
+	})).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || len(auditor.events) != 1 {
+		t.Fatalf("status=%d events=%+v body=%s", recorder.Code, auditor.events, recorder.Body.String())
+	}
+}
+
+func TestRequireAuditsAuthorizationDenialAndPreservesForbiddenResponse(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		auditErr error
+	}{
+		{name: "audit succeeds"},
+		{name: "audit fails", auditErr: errors.New("audit unavailable")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			token, principal := fixture(t)
+			auditor := &recordingAuditor{err: test.auditErr}
+			middleware, err := auth.NewMiddleware(
+				auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+					return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+				}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			denied, err := auth.RequireAudited("tasks:write", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("handler called without permission")
+			}), auditor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+			request.Header.Set("Authorization", "Bearer "+token.Reveal())
+			recorder := httptest.NewRecorder()
+			middleware.Authenticate(denied).ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if len(auditor.events) != 1 {
+				t.Fatalf("events=%+v", auditor.events)
+			}
+			event := auditor.events[0]
+			if event.Kind != auth.SecurityAuthorizationDenied || event.Outcome != auth.SecurityOutcomeDenied ||
+				event.ActorID != principal.SubjectID() || event.SubjectID != (uuid.UUID{}) ||
+				event.MembershipID != (uuid.UUID{}) || event.AccountDigest != (auth.Digest{}) ||
+				event.SourceDigest != (auth.Digest{}) || event.CredentialDigest != (auth.Digest{}) {
+				t.Fatalf("event=%+v", event)
+			}
+		})
+	}
+}
+
+func TestMiddlewareDoesNotAuditMalformedCredential(t *testing.T) {
+	t.Parallel()
+	auditor := &recordingAuditor{}
+	middleware, err := auth.NewMiddleware(
+		auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+			t.Fatal("resolver called for malformed token")
+			return auth.Session{}, false, nil
+		}),
+		auth.WithAuthenticationAuditor(auditor),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/private", nil)
+	request.Header.Set("Authorization", "Bearer malformed")
+	recorder := httptest.NewRecorder()
+	middleware.Authenticate(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler called for malformed token")
+	})).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || len(auditor.events) != 0 {
+		t.Fatalf("status=%d events=%+v body=%s", recorder.Code, auditor.events, recorder.Body.String())
+	}
+}
+
+type recordingAuditor struct {
+	events []auth.SecurityEvent
+	err    error
+}
+
+func (a *recordingAuditor) RecordSecurityEvent(_ context.Context, event auth.SecurityEvent) error {
+	a.events = append(a.events, event)
+	return a.err
+}
+
 func fixture(t *testing.T) (auth.Token, auth.Principal) {
 	t.Helper()
 	token, err := auth.NewToken()
