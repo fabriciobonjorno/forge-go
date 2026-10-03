@@ -15,8 +15,9 @@ flows, recovery and MFA primitives, and security auditing. Its remaining
 scope and adapter boundaries are listed in the roadmap. APIs may change
 without notice until a tagged release.
 
-Still planned: background jobs, OpenTelemetry, OpenAPI, resource code
-generation, performance work, and security hardening. See
+The PostgreSQL transactional outbox foundation is implemented; dispatch,
+background jobs, scheduling, OpenTelemetry, OpenAPI, resource code generation,
+performance work, and further security hardening remain planned. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 
 ## Packages
@@ -36,6 +37,7 @@ Core packages import only the standard library and each other; a test
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown |
 | `web`        | JSON responses, the single error format, strict JSON decoding, request ID and request-scoped logger |
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
+| `events` | Versioned event envelope with bounded JSON payloads |
 | `health`     | Readiness check registry; `/health`, `/health/live`, `/health/ready` |
 | `uuid`       | RFC 9562 UUIDv7 (default identifier), monotonic generator, JSON/text/SQL support |
 | `fault`      | Typed application errors (code, message, category, cause, metadata, retryable, HTTP status) |
@@ -48,6 +50,7 @@ Adapter packages (third-party dependencies allowed):
 | Package                 | Purpose |
 | ----------------------- | ------- |
 | `postgres`              | PostgreSQL on pgx v5: pool, `DBTX`, transactions with retry, error translation, advisory locks, migrations |
+| `outbox/postgres`       | PostgreSQL transactional outbox insert and schema migration |
 | `mysql`                 | MySQL and MariaDB on go-sql-driver/mysql: hardened session, error translation, migrations |
 | `sqlite`                | SQLite on the pure-Go modernc.org/sqlite: enforced pragmas, error translation, migrations with a file lock |
 | `postgres/postgrestest`, `mysql/mysqltest`, `sqlite/sqlitetest` | A fresh database per test |
