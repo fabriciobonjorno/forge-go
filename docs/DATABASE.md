@@ -379,7 +379,14 @@ waiting, the last error is returned joined with the context error.
 from the start. It must not send email, call external APIs, publish messages,
 or change state outside the transaction, because those effects either repeat
 or remain after a rollback. Do such work after the transaction commits.
-(A transactional outbox is planned for Phase 4.)
+The Phase 4 foundation provides `events.Event` and
+`outbox/postgres.Insert`. Pass the active `pgx.Tx` from `postgres.InTx` so the
+event row commits or rolls back with the domain change. This first slice
+persists events only; it does not dispatch them. Delivery, retries, and
+consumer idempotency are not yet provided. See
+[ADR 0017](adr/0017-transactional-outbox-foundation.md).
+The initial outbox schema migration is intentionally irreversible because its
+rollback would delete persisted event data.
 
 ## Optimistic locking
 
