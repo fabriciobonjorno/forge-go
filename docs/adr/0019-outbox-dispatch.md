@@ -1,4 +1,4 @@
-# ADR 0018: PostgreSQL outbox dispatch
+# ADR 0019: PostgreSQL outbox dispatch
 
 Status: accepted
 

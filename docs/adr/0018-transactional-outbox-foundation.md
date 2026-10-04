@@ -1,4 +1,4 @@
-# ADR 0017: Transactional outbox foundation
+# ADR 0018: Transactional outbox foundation
 
 Status: accepted (Phase 4 foundation)
 

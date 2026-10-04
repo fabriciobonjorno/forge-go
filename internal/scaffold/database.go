@@ -42,6 +42,7 @@ type databaseProfile struct {
 	TestPackage string // its test helper package
 	Server      bool
 	Identity    bool // generated Forge identity wiring is available
+	Jobs        bool // generated Forge jobs wiring is available
 
 	// Server databases only.
 	Service       string      // compose service and host name
@@ -62,22 +63,22 @@ type databaseProfile struct {
 func profileFor(name, user, database string) *databaseProfile {
 	switch name {
 	case "postgresql":
-		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
-			Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true, Identity: true,
-			ProductionTLS: "`sslmode=verify-full` or `verify-ca` (`sslrootcert` for a private CA)",
-			MigrationLock: "a PostgreSQL advisory lock",
-			Service:       "postgres", Image: "postgres:18-alpine", ContainerPort: 5432,
-			// The PostgreSQL 18 image keeps its data in a versioned
-			// subdirectory of /var/lib/postgresql.
-			VolumePath: "/var/lib/postgresql",
-			Env: [][2]string{
-				{"POSTGRES_USER", user}, {"POSTGRES_PASSWORD", "development"}, {"POSTGRES_DB", database},
-			},
-			Healthcheck: fmt.Sprintf(`["CMD-SHELL", "pg_isready -U %s -d %s"]`, user, database),
-			CIEnv:       [][2]string{{"POSTGRES_USER", "forge"}, {"POSTGRES_PASSWORD", "forge"}},
-			CIHealthCmd: "pg_isready -U forge",
-			CITestURL:   "postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable",
-		}
+			return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
+				Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true, Identity: true, Jobs: true,
+				ProductionTLS: "`sslmode=verify-full` or `verify-ca` (`sslrootcert` for a private CA)",
+				MigrationLock: "a PostgreSQL advisory lock",
+				Service:       "postgres", Image: "postgres:18-alpine", ContainerPort: 5432,
+				// The PostgreSQL 18 image keeps its data in a versioned
+				// subdirectory of /var/lib/postgresql.
+				VolumePath: "/var/lib/postgresql",
+				Env: [][2]string{
+					{"POSTGRES_USER", user}, {"POSTGRES_PASSWORD", "development"}, {"POSTGRES_DB", database},
+				},
+				Healthcheck: fmt.Sprintf(`["CMD-SHELL", "pg_isready -U %s -d %s"]`, user, database),
+				CIEnv:       [][2]string{{"POSTGRES_USER", "forge"}, {"POSTGRES_PASSWORD", "forge"}},
+				CIHealthCmd: "pg_isready -U forge",
+				CITestURL:   "postgres://forge:***@127.0.0.1:5432/postgres?sslmode=disable",
+			}
 	case "mysql":
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
 			Name: name, Title: "MySQL 8.4", Adapter: "mysql", TestPackage: "mysqltest", Server: true,

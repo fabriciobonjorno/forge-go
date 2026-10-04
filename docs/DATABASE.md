@@ -389,8 +389,8 @@ an application-owned context. Handler calls happen outside database
 transactions, and the dispatcher renews its lease while the handler runs.
 Dead-letter rows are retained for operator inspection; automated replay and
 queue metrics are not yet provided. See
-[ADR 0017](adr/0017-transactional-outbox-foundation.md) and
-[ADR 0018](adr/0018-outbox-dispatch.md). Both outbox migrations are
+[ADR 0018](adr/0018-transactional-outbox-foundation.md) and
+[ADR 0019](adr/0019-outbox-dispatch.md). Both outbox migrations are
 intentionally irreversible because rollback would delete persisted event data.
 
 ## Optimistic locking

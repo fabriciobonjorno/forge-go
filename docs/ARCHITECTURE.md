@@ -425,11 +425,10 @@ the database pool directly in `app/bootstrap`.
 | [0010](adr/0010-opaque-sessions-and-fail-closed-tenancy.md) | Opaque sessions and fail-closed tenancy |
 | [0011](adr/0011-login-throttling.md) | Login throttling by account and source |
 | [0012](adr/0012-cookie-sessions-and-csrf.md) | Explicit secure-cookie sessions with double-submit CSRF |
-| [0013](adr/0013-password-recovery.md) | One-time password recovery with global session revocation |
-| [0014](adr/0014-totp-mfa.md) | TOTP MFA with encrypted seeds and replay-safe challenges |
-| [0015](adr/0015-mfa-factor-lifecycle.md) | MFA factor rotation and disable require step-up |
-| [0016](adr/0016-structured-security-audit.md) | Structured security audit without arbitrary payloads |
-| [0017](adr/0017-transactional-outbox-foundation.md) | Transactional outbox foundation |
+| [0017](adr/0017-tenancy-enforcement-mysql-sqlite.md) | Tenancy enforcement for MySQL and SQLite |
+| [0018](adr/0018-transactional-outbox-foundation.md) | Transactional outbox foundation |
+| [0019](adr/0019-outbox-dispatch.md) | PostgreSQL outbox dispatch |
+| [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
 
 ## Not yet implemented
 

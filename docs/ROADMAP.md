@@ -198,9 +198,9 @@ dispatcher with renewable leases, token-fenced acknowledgements, exponential
 retry, and a terminal dead-letter state are implemented. Dead-letter replay,
 queue metrics (`Dispatcher.Stats`, `ListDeadLetters`), an in-process job
 scheduler (`jobs.Scheduler`), and generated-application wiring are complete.
-See [ADR 0017](adr/0017-transactional-outbox-foundation.md),
-[ADR 0018](adr/0018-outbox-dispatch.md), and
-[ADR 0019](adr/0019-background-jobs-scheduling.md).
+See [ADR 0018](adr/0018-transactional-outbox-foundation.md),
+[ADR 0019](adr/0019-outbox-dispatch.md), and
+[ADR 0020](adr/0020-background-jobs-scheduling.md).
 
 ## Phase 5 - Observability
 

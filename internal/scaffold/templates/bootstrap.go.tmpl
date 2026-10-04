@@ -11,6 +11,9 @@ import (
 	"github.com/fabriciobonjorno/forge-go/auth"
 	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
 {{- end}}
+{{- if and .DB .DB.Jobs (not .DB.Identity)}}
+	"github.com/fabriciobonjorno/forge-go/jobs"
+{{- end}}
 {{- if .DB}}
 	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
 {{- end}}
@@ -35,7 +38,7 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := routes(ctx, app); err != nil {
 		return err
 	}
-{{- if .DB.Identity}}
+{{- if and .DB .DB.Identity}}
 	return identityRoutes(app, database)
 {{- else}}
 	return nil
@@ -44,6 +47,22 @@ func Configure(ctx context.Context, app *forge.App) error {
 {{- else}}
 func Configure(_ context.Context, app *forge.App) error {
 	return routes(context.Background(), app)
+}
+{{- end}}
+
+{{- if and .DB .DB.Jobs (not .DB.Identity)}}
+func JobsConfigure(app *forge.App, database *postgres.DB) error {
+	scheduler := jobs.NewScheduler(jobs.SchedulerOptions{MaxConcurrentJobs: 4})
+	// Register application jobs here, e.g.:
+	// scheduler.Register("cleanup", jobs.ScheduleSpec{Every: 24 * time.Hour}, func(ctx context.Context) error {
+	//     return app.InTx(ctx, func(tx pgx.Tx) error {
+	//         // cleanup work
+	//         return nil
+	//     })
+	// })
+	app.OnShutdown(func(ctx context.Context) error { return scheduler.Stop() })
+	scheduler.Start()
+	return nil
 }
 {{- end}}
 

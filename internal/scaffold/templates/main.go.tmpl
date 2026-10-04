@@ -13,6 +13,9 @@ import (
 {{- if and .DB .DB.Identity}}
 	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
 {{- end}}
+{{- if and .DB .DB.Jobs (not .DB.Identity)}}
+	"github.com/fabriciobonjorno/forge-go/jobs"
+{{- end}}
 {{- if .DB}}
 	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
 {{- end}}
@@ -28,6 +31,18 @@ func main() {
 	forge.Main(
 		bootstrap.Configure,
 		postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations())...,
+	)
+}
+{{- else if and .DB .DB.Jobs -}}
+func main() {
+	forge.Main(
+		func(ctx context.Context, app *forge.App) error {
+			if err := bootstrap.Configure(ctx, app); err != nil {
+				return err
+			}
+			return bootstrap.JobsConfigure(app, db.Pool())
+		},
+		postgres.Commands(db.Migrations())...,
 	)
 }
 {{- else if .DB -}}
