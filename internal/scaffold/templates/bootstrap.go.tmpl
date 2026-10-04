@@ -32,7 +32,7 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := app.Readiness("database", database.Ping); err != nil {
 		return err
 	}
-	if err := routes(app); err != nil {
+	if err := routes(ctx, app); err != nil {
 		return err
 	}
 {{- if .DB.Identity}}
@@ -43,17 +43,39 @@ func Configure(ctx context.Context, app *forge.App) error {
 }
 {{- else}}
 func Configure(_ context.Context, app *forge.App) error {
-	return routes(app)
+	return routes(context.Background(), app)
 }
 {{- end}}
 
-func routes(app *forge.App) error {
-	return app.HandleFunc("GET /v1/status", status)
+func routes(ctx context.Context, app *forge.App) error {
+	// Public routes
+	if err := app.HandleFunc("GET /{$}", welcome); err != nil {
+		return err
+	}
+	if err := app.Handle("GET /assets/", brandAssetsHandler()); err != nil {
+		return err
+	}
+	if err := app.HandleFunc("GET /v1/status", status); err != nil {
+		return err
+	}
+{{- if and .DB (eq .DB.Adapter "postgres")}}
+	if err := app.HandleFunc("GET /health/ready", ready); err != nil {
+		return err
+	}
+{{- end}}
+
+	return nil
 }
 
 func status(w http.ResponseWriter, _ *http.Request) {
 	web.JSON(w, http.StatusOK, map[string]string{"service": "{{.Name}}", "status": "ok"})
 }
+
+{{- if and .DB (eq .DB.Adapter "postgres")}}
+func ready(w http.ResponseWriter, _ *http.Request) {
+	web.JSON(w, http.StatusOK, map[string]string{"database": "ok"})
+}
+{{- end}}
 {{- if and .DB .DB.Identity}}
 
 func identityRoutes(app *forge.App, database *postgres.DB) error {
