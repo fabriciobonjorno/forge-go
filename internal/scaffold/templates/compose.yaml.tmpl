@@ -19,14 +19,15 @@
 
 x-app: &app
   build: .
+{{- if .DB.Identity}}
+  env_file:
+    - .env.local
+{{- end}}
   environment:
     FORGE_ENV: development
     FORGE_HTTP_ADDR: 0.0.0.0:8080
     FORGE_HTTP_TRANSPORT: plain
     FORGE_DATABASE_URL: {{.AppDatabaseURL}}
-{{- if .DB.Identity}}
-    FORGE_AUTH_MFA_KEY: ${FORGE_AUTH_MFA_KEY:-}
-{{- end}}
 {{- if not .DB.Server}}
   volumes:
     - storage:/app/storage

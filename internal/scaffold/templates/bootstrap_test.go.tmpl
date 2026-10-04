@@ -1,6 +1,11 @@
 package bootstrap
 
 import (
+	{{- if and .DB .DB.Identity}}
+	"bytes"
+	"log/slog"
+	"github.com/fabriciobonjorno/forge-go/auth"
+	{{- end}}
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -97,4 +102,26 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	}
 {{- end}}
 }
+{{- if .DB.Identity}}
+
+func TestRecoveryDeliveryPlaceholderFailsClosedWithoutLoggingSecrets(t *testing.T) {
+	var logs bytes.Buffer
+	sender := recoveryDeliveryNotConfigured{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	token, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const email = "private@example.com"
+	err = sender.SendPasswordRecovery(context.Background(), auth.PasswordRecoveryMessage{
+		Email: email,
+		Token: token,
+	})
+	if err == nil {
+		t.Fatal("expected missing delivery adapter to fail closed")
+	}
+	if strings.Contains(logs.String(), email) || strings.Contains(logs.String(), token.Reveal()) {
+		t.Fatalf("delivery placeholder logged sensitive recovery data: %s", logs.String())
+	}
+}
+{{- end}}
 {{- end}}

@@ -91,6 +91,7 @@ var files = []file{
 	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), false},
 	{"README.md.tmpl", fixed("README.md"), false},
 	{"env.development.tmpl", fixed(".env.development"), false},
+	{"env.local.tmpl", fixed(".env.local"), true},
 	{"db.go.tmpl", fixed(filepath.Join("db", "db.go")), true},
 	{"keep.tmpl", fixed(filepath.Join("db", "migrations", ".keep")), true},
 }
@@ -178,13 +179,14 @@ func render(opts Options) (map[string][]byte, error) {
 	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
 		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
 	}
-	// Generate MFA encryption key for databases
-	if data.DB != nil {
+	// Keep the generated MFA key in the git-ignored .env.local, not the
+	// committed .env.development defaults.
+	if data.DB != nil && data.DB.Identity {
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
 			return nil, fmt.Errorf("generate MFA encryption key: %w", err)
 		}
-		data.MFAEncryptionKey = base64.StdEncoding.EncodeToString(key)
+		data.MFAEncryptionKey = base64.RawURLEncoding.EncodeToString(key)
 	}
 	output := make(map[string][]byte, len(files))
 	for _, f := range selectedFiles(opts) {

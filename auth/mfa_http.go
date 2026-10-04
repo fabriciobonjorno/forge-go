@@ -441,8 +441,8 @@ func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http
 			}
 			if auditor != nil {
 				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:      SecurityMFAChallengeFailed,
-					Outcome:   SecurityOutcomeFailed,
+					Kind:    SecurityMFAChallengeFailed,
+					Outcome: SecurityOutcomeFailed,
 				}); auditErr != nil {
 					web.Logger(r.Context()).Error("security audit failed",
 						"method", r.Method,
@@ -456,8 +456,8 @@ func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http
 		}
 		if auditor != nil {
 			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:      SecurityMFAChallengeFailed,
-				Outcome:   SecurityOutcomeSucceeded,
+				Kind:    SecurityMFAChallengeFailed,
+				Outcome: SecurityOutcomeSucceeded,
 			}); auditErr != nil {
 				web.Logger(r.Context()).Error("security audit failed",
 					"method", r.Method,

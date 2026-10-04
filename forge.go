@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -17,10 +18,21 @@ import (
 	"github.com/fabriciobonjorno/forge-go/health"
 	"github.com/fabriciobonjorno/forge-go/httpserver"
 	"github.com/fabriciobonjorno/forge-go/router"
+	htmlviews "github.com/fabriciobonjorno/forge-go/views"
 	"github.com/fabriciobonjorno/forge-go/web"
 )
 
 const liveRoutePath = "/health/live"
+
+// ViewRenderer executes server-side HTML templates with contextual escaping.
+// It is an alias for views.Renderer, exposed here for generated apps that
+// vendor the main Forge package.
+type ViewRenderer = htmlviews.Renderer
+
+// NewViewRenderer parses *.gohtml templates from templates.
+func NewViewRenderer(templates fs.FS) (*ViewRenderer, error) {
+	return htmlviews.New(templates)
+}
 
 type Option func(*options) error
 

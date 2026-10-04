@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -49,12 +50,15 @@ func (s ScheduleSpec) Validate() error {
 	}
 	if s.Cron != "" {
 		count++
+		if _, err := parseCron(s.Cron); err != nil {
+			return fmt.Errorf("invalid cron schedule: %w", err)
+		}
 	}
 	if count != 1 {
 		return errors.New("ScheduleSpec requires exactly one of Every, DailyAt, or Cron")
 	}
 	if s.Every > 0 && s.Every < time.Second {
-		return errors.New("Every interval must be at least 1 second")
+		return errors.New("every interval must be at least 1 second")
 	}
 	return nil
 }
@@ -62,7 +66,7 @@ func (s ScheduleSpec) Validate() error {
 // nextRun returns the next time after 'after' that the schedule fires.
 // For Every, it's the next multiple of the interval after 'after'.
 // For DailyAt, it's the next occurrence of that time-of-day.
-// For Cron, it uses a simple cron parser (standard 5-field, UTC).
+// For Cron, it uses numeric 5-field cron syntax in UTC.
 func (s ScheduleSpec) nextRun(after time.Time) (time.Time, error) {
 	if s.Every > 0 {
 		// Align to interval boundary after 'after'
@@ -78,9 +82,6 @@ func (s ScheduleSpec) nextRun(after time.Time) (time.Time, error) {
 		}
 		return next, nil
 	}
-	if s.Cron != "" {
-		return nextCronRun(s.Cron, after)
-	}
 	return time.Time{}, errors.New("no schedule set")
 }
 
@@ -88,17 +89,21 @@ func (s ScheduleSpec) nextRun(after time.Time) (time.Time, error) {
 // each replica runs its own instance. Jobs that must run exactly once per
 // schedule tick across replicas should use postgres.TryAdvisoryXactLock.
 type Scheduler struct {
-	jobs   map[string]scheduledJob
-	opts   SchedulerOptions
-	mu     sync.Mutex
-	wg     sync.WaitGroup
-	ctx    context.Context
-	cancel context.CancelFunc
+	jobs       map[string]scheduledJob
+	opts       SchedulerOptions
+	mu         sync.Mutex
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	concurrent chan struct{}
+	started    bool
+	stopped    bool
 }
 
 type scheduledJob struct {
 	spec ScheduleSpec
 	job  Job
+	cron *cronSchedule
 }
 
 // SchedulerOptions bounds scheduler behavior.
@@ -106,6 +111,9 @@ type SchedulerOptions struct {
 	// MaxConcurrentJobs bounds the number of jobs running simultaneously.
 	// Default 4, maximum 256.
 	MaxConcurrentJobs int
+	// OnError receives job failures. When nil, failures are sent to the
+	// standard structured logger. The callback may be invoked concurrently.
+	OnError func(jobName string, err error)
 }
 
 // NewScheduler creates a scheduler with the given options. Zero or negative
@@ -117,12 +125,18 @@ func NewScheduler(opts SchedulerOptions) *Scheduler {
 	if opts.MaxConcurrentJobs > 256 {
 		opts.MaxConcurrentJobs = 256
 	}
+	if opts.OnError == nil {
+		opts.OnError = func(name string, err error) {
+			slog.Default().Error("scheduled job failed", "job", name, "error", err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
-		jobs:   make(map[string]scheduledJob),
-		opts:   opts,
-		ctx:    ctx,
-		cancel: cancel,
+		jobs:       make(map[string]scheduledJob),
+		opts:       opts,
+		ctx:        ctx,
+		cancel:     cancel,
+		concurrent: make(chan struct{}, opts.MaxConcurrentJobs),
 	}
 }
 
@@ -138,32 +152,59 @@ func (s *Scheduler) Register(name string, spec ScheduleSpec, job Job) error {
 	if job == nil {
 		return errors.New("job function is required")
 	}
+	if spec.DailyAt != nil {
+		daily := *spec.DailyAt
+		spec.DailyAt = &daily
+	}
+	var cron *cronSchedule
+	if spec.Cron != "" {
+		var err error
+		cron, err = parseCron(spec.Cron)
+		if err != nil {
+			return fmt.Errorf("invalid cron schedule for job %q: %w", name, err)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.started || s.stopped {
+		return errors.New("jobs must be registered before the scheduler starts")
+	}
 	if _, exists := s.jobs[name]; exists {
 		return fmt.Errorf("job %q already registered", name)
 	}
-	s.jobs[name] = scheduledJob{spec: spec, job: job}
+	s.jobs[name] = scheduledJob{spec: spec, job: job, cron: cron}
 	return nil
 }
 
-// Start begins running all registered jobs on their schedules. It returns
-// immediately; jobs run in background goroutines. The scheduler runs until
-// Stop is called or the context passed to NewScheduler is canceled.
+// Start begins running all registered jobs on their schedules. It is
+// idempotent and returns immediately; jobs run in owned goroutines until Stop.
 func (s *Scheduler) Start() {
+	s.mu.Lock()
+	if s.started || s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.started = true
+	jobs := make(map[string]scheduledJob, len(s.jobs))
 	for name, sj := range s.jobs {
-		s.wg.Add(1)
+		jobs[name] = sj
+	}
+	s.wg.Add(len(jobs))
+	s.mu.Unlock()
+	for name, sj := range jobs {
 		go s.runJob(name, sj)
 	}
 }
 
 // Stop cancels the scheduler context and waits for all in-flight jobs to
-// complete. It returns the context cancellation error or nil if all jobs
-// finished cleanly.
+// complete. It is safe to call more than once.
 func (s *Scheduler) Stop() error {
+	s.mu.Lock()
+	s.stopped = true
 	s.cancel()
+	s.mu.Unlock()
 	s.wg.Wait()
-	return s.ctx.Err()
+	return nil
 }
 
 func (s *Scheduler) runJob(name string, sj scheduledJob) {
@@ -171,30 +212,46 @@ func (s *Scheduler) runJob(name string, sj scheduledJob) {
 	nextRun := time.Now().UTC()
 	for {
 		var err error
-		nextRun, err = sj.spec.nextRun(nextRun)
+		if sj.cron != nil {
+			nextRun, err = sj.cron.nextRun(nextRun)
+		} else {
+			nextRun, err = sj.spec.nextRun(nextRun)
+		}
 		if err != nil {
-			// Log and continue; scheduler keeps running
+			s.opts.OnError(name, err)
 			return
 		}
 		wait := time.Until(nextRun)
 		if wait < 0 {
 			wait = 0
 		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-s.ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
-		case <-time.After(wait):
+		case <-timer.C:
 		}
 		select {
 		case <-s.ctx.Done():
 			return
-		default:
-			// Run the job with a timeout derived from the schedule
-			// (for Every, use the interval; for others, use a reasonable default)
-			jobCtx, cancel := context.WithTimeout(s.ctx, jobTimeout(sj.spec))
-			sj.job(jobCtx)
-			cancel()
+		case s.concurrent <- struct{}{}:
 		}
+		if s.ctx.Err() != nil {
+			<-s.concurrent
+			return
+		}
+		jobCtx, cancel := context.WithTimeout(s.ctx, jobTimeout(sj.spec))
+		if err := sj.job(jobCtx); err != nil {
+			s.opts.OnError(name, err)
+		}
+		cancel()
+		<-s.concurrent
 	}
 }
 
@@ -206,12 +263,4 @@ func jobTimeout(spec ScheduleSpec) time.Duration {
 		return 5 * time.Minute
 	}
 	return 10 * time.Minute // cron jobs may be longer-running
-}
-
-// nextCronRun computes the next run time for a standard 5-field cron expression.
-// This is a minimal implementation for the common cases.
-func nextCronRun(expr string, after time.Time) (time.Time, error) {
-	// Simplified: delegate to a proper cron library in production.
-	// For now, return an error to force use of Every or DailyAt.
-	return time.Time{}, fmt.Errorf("cron expressions not yet implemented; use Every or DailyAt")
 }

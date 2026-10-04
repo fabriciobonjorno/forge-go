@@ -1,0 +1,164 @@
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+
+	"github.com/fabriciobonjorno/forge-go/internal/version"
+)
+
+type commandCatalog struct {
+	SchemaVersion    int              `json:"schema_version"`
+	Name             string           `json:"name"`
+	Version          string           `json:"version"`
+	ProcessExitCodes []exitCodeDetail `json:"process_exit_codes"`
+	GlobalOptions    []flagDetail     `json:"global_options"`
+	Commands         []commandDetail  `json:"commands"`
+}
+
+type commandDetail struct {
+	Name        string           `json:"name"`
+	Usage       string           `json:"usage"`
+	Summary     string           `json:"summary"`
+	SideEffects []string         `json:"side_effects"`
+	Examples    []string         `json:"examples"`
+	Environment environmentInfo  `json:"environment"`
+	ExitCodes   []exitCodeDetail `json:"exit_codes"`
+	Flags       []flagDetail     `json:"flags,omitempty"`
+}
+
+type flagDetail struct {
+	Name        string `json:"name"`
+	Value       string `json:"value,omitempty"`
+	Default     string `json:"default,omitempty"`
+	Description string `json:"description"`
+}
+
+type environmentInfo struct {
+	Files     []string `json:"files"`
+	Variables []string `json:"variables"`
+	Notes     string   `json:"notes,omitempty"`
+}
+
+type exitCodeDetail struct {
+	Code    int    `json:"code"`
+	Meaning string `json:"meaning"`
+}
+
+func runHelp(args []string, output io.Writer) error {
+	if len(args) == 0 {
+		usage(output)
+		return nil
+	}
+	if len(args) != 1 || args[0] != "--json" {
+		return errors.New("usage: forge help [--json]")
+	}
+	return json.NewEncoder(output).Encode(currentCommandCatalog())
+}
+
+func currentCommandCatalog() commandCatalog {
+	commands := []commandDetail{
+		{
+			Name: "new", Usage: "forge new NAME [flags]",
+			Summary:     "Generate a Dockerized application skeleton.",
+			SideEffects: []string{"filesystem_write", "subprocess", "network_optional"},
+			Examples:    []string{"forge new inventory", "forge new inventory --database sqlite", "forge new inventory --skip-database --skip-deps"},
+			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Go dependency-resolution subprocesses inherit the caller environment; Forge runtime variables are not consumed by this command."},
+			Flags: []flagDetail{
+				{Name: "--module", Value: "PATH", Description: "Go module path; defaults to NAME."},
+				{Name: "--dir", Value: "DIR", Description: "Target directory; must be absent or empty."},
+				{Name: "--database", Value: "DB", Default: "postgresql", Description: "Database: postgresql, mysql, mariadb, sqlite or none."},
+				{Name: "-d", Value: "DB", Default: "postgresql", Description: "Shorthand for --database."},
+				{Name: "--skip-database", Description: "Generate without a database; conflicts with an explicit --database."},
+				{Name: "--framework-path", Value: "DIR", Description: "Use a local Forge checkout and vendor it."},
+				{Name: "--skip-deps", Description: "Do not resolve Go dependencies."},
+			},
+		},
+		{Name: "dev", Usage: "forge dev [NAME]", Summary: "Run the application in development mode.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge dev", "forge dev api"}, Environment: runtimeEnvironment()},
+		{Name: "test", Usage: "forge test [ARGS]", Summary: "Run Go tests with Forge environment files loaded.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge test", "forge test ./... -run TestHealth"}, Environment: testEnvironment()},
+		{Name: "build", Usage: "forge build [NAME]", Summary: "Build the application binary under bin/.", SideEffects: []string{"filesystem_write", "subprocess"}, Examples: []string{"forge build", "forge build worker"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "The Go build subprocess inherits the caller environment; Forge .env files are not loaded."}},
+		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: runtimeEnvironment()},
+		{
+			Name: "rollback", Usage: "forge rollback [-steps N]",
+			Summary:     "Run down migrations; may destroy application data.",
+			SideEffects: []string{"database_destructive"},
+			Examples:    []string{"forge rollback", "forge rollback -steps 2"},
+			Environment: runtimeEnvironment(),
+			Flags:       []flagDetail{{Name: "-steps", Value: "N", Default: "1", Description: "Number of migrations to revert."}},
+		},
+		{Name: "generate", Usage: "forge generate <migration|view> NAME [--dry-run]", Summary: "Generate or preview a migration pair or an embedded, auto-escaped HTML view without overwriting existing files.", SideEffects: []string{"filesystem_read", "filesystem_write"}, Examples: []string{"forge generate migration create_widgets --dry-run", "forge generate view welcome"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Reads go.mod and the relevant generator directories; --dry-run does not create files or directories."}, Flags: []flagDetail{{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."}}},
+		{Name: "doctor", Usage: "forge doctor [--json]", Summary: "Validate local Forge configuration and show redacted diagnostics.", SideEffects: []string{"environment_read", "filesystem_read"}, Examples: []string{"forge doctor", "forge doctor --json"}, Environment: configEnvironment("Checks configuration values and intentionally omits their contents from JSON output."), Flags: []flagDetail{{Name: "--json", Description: "Print schema-versioned diagnostics with stable remediation codes."}}},
+		{Name: "inspect", Usage: "forge inspect --json", Summary: "Read-only inventory of commands, migrations, static routes, modules and database adapter; never executes application code.", SideEffects: []string{"filesystem_read", "environment_read"}, Examples: []string{"forge inspect --json"}, Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Process environment takes precedence over env files; the database URL value is never emitted."}, Flags: []flagDetail{{Name: "--json", Description: "Print the schema-versioned project inventory."}}},
+		{
+			Name: "uuid", Usage: "forge uuid [--count N]",
+			Summary:     "Generate UUIDv7 identifiers.",
+			SideEffects: []string{"random_output"},
+			Examples:    []string{"forge uuid", "forge uuid --count 5"},
+			Environment: environmentInfo{Files: []string{}, Variables: []string{}},
+			Flags:       []flagDetail{{Name: "--count", Value: "N", Default: "1", Description: "Number of identifiers, from 1 to 1000."}},
+		},
+		{Name: "version", Usage: "forge version", Summary: "Print the Forge version.", SideEffects: []string{"read_only"}, Examples: []string{"forge version"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}},
+		{Name: "help", Usage: "forge help [--json]", Summary: "Show human-readable help or the versioned command catalog.", SideEffects: []string{"read_only"}, Examples: []string{"forge help", "forge help --json"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}, Flags: []flagDetail{{Name: "--json", Description: "Print the stable machine-readable command catalog."}}},
+	}
+	for i := range commands {
+		if commands[i].Examples == nil {
+			commands[i].Examples = []string{}
+		}
+		if commands[i].Environment.Files == nil {
+			commands[i].Environment.Files = []string{}
+		}
+		if commands[i].Environment.Variables == nil {
+			commands[i].Environment.Variables = []string{}
+		}
+		commands[i].ExitCodes = []exitCodeDetail{
+			{Code: 0, Meaning: "The command completed successfully."},
+			{Code: 1, Meaning: "The command failed, its arguments or configuration were invalid, or delegated application work failed."},
+		}
+	}
+	return commandCatalog{
+		SchemaVersion: 1,
+		Name:          "forge",
+		Version:       version.Version,
+		GlobalOptions: []flagDetail{{Name: jsonErrorFormatFlag, Description: "Emit schema-versioned, secret-safe errors on stderr when a command fails."}},
+		ProcessExitCodes: []exitCodeDetail{
+			{Code: 0, Meaning: "The requested command completed successfully."},
+			{Code: 1, Meaning: "A command failed or its arguments/configuration were invalid."},
+			{Code: 2, Meaning: "No command was supplied or the top-level command is unknown."},
+		},
+		Commands: commands,
+	}
+}
+
+func runtimeEnvironment() environmentInfo {
+	return environmentInfo{
+		Files: []string{".env.development", ".env.local"},
+		Variables: []string{
+			"FORGE_ENV", "FORGE_HTTP_ADDR", "FORGE_HTTP_TRANSPORT", "FORGE_HTTP_TLS_CERT_FILE", "FORGE_HTTP_TLS_KEY_FILE",
+			"FORGE_HTTP_READ_HEADER_TIMEOUT", "FORGE_HTTP_READ_TIMEOUT", "FORGE_HTTP_WRITE_TIMEOUT", "FORGE_HTTP_IDLE_TIMEOUT", "FORGE_HTTP_SHUTDOWN_TIMEOUT",
+			"FORGE_HTTP_MAX_HEADER_BYTES", "FORGE_HTTP_MAX_BODY_BYTES", "FORGE_DATABASE_URL", "FORGE_DATABASE_MAX_CONNS", "FORGE_DATABASE_MIN_CONNS",
+			"FORGE_DATABASE_MAX_CONN_LIFETIME", "FORGE_DATABASE_MAX_CONN_IDLE_TIME", "FORGE_DATABASE_CONNECT_TIMEOUT", "FORGE_DATABASE_STATEMENT_TIMEOUT",
+			"FORGE_DATABASE_ALLOW_PLAINTEXT", "FORGE_AUTH_MFA_KEY",
+		},
+		Notes: "The process environment overrides .env.local, which overrides .env.development. Values are passed to the generated application.",
+	}
+}
+
+func testEnvironment() environmentInfo {
+	input := runtimeEnvironment()
+	input.Variables = append(input.Variables,
+		"FORGE_TEST_DATABASE_URL",
+		"FORGE_TEST_REQUIRE_DATABASE",
+		"FORGE_TEST_POSTGRES_URL",
+		"FORGE_TEST_MYSQL_URL",
+		"FORGE_TEST_SQLITE_URL",
+	)
+	input.Notes = "The process environment overrides env files; FORGE_ENV defaults to development if unset. All loaded values reach tests, which may consume additional application-specific variables."
+	return input
+}
+
+func configEnvironment(notes string) environmentInfo {
+	input := runtimeEnvironment()
+	input.Notes = notes + " Process environment overrides .env.local, which overrides .env.development."
+	return input
+}

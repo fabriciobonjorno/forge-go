@@ -54,7 +54,10 @@ forge dev
 forge test                               # go test ./... with .env.development loaded
 forge build                              # static binary in bin/{{.Name}}
 docker build -t {{.Name}} .                  # production image
+forge generate view welcome --dry-run     # preview files without writing
+forge generate view welcome              # embedded, auto-escaped HTML template
 {{- if .DB}}
+forge generate migration create_widgets --dry-run # preview exact migration files
 forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql
 forge migrate                            # apply pending migrations
 forge migrate status
@@ -62,34 +65,33 @@ forge rollback                           # revert the latest migration
 {{- end}}
 ```
 
-## Authentication (generated with database)
+{{- if and .DB .DB.Identity}}
+## Authentication (generated with PostgreSQL)
 
 The following endpoints are registered by `bootstrap.Configure`:
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| `POST` | `/v1/auth/token/login` | Bearer token login (returns `access_token`) |
-| `POST` | `/v1/auth/login` | Secure cookie login (sets `__Host-forge_session` + `__Host-forge_csrf`) |
-| `POST` | `/v1/auth/token/logout` | Bearer logout (revokes token) |
-| `POST` | `/v1/auth/logout` | Cookie logout (revokes + clears cookies, requires CSRF) |
-| `POST` | `/v1/auth/mfa` | MFA completion (cookie) — submit challenge + TOTP code |
-| `POST` | `/v1/auth/recovery` | Request password recovery link (non-enumerating) |
-| `POST` | `/v1/auth/reset` | Reset password with recovery token |
+| `POST` | `/auth/login` | Bearer login; returns an opaque access token unless MFA is required |
+| `POST` | `/auth/logout` | Revoke a bearer session |
+| `GET` | `/v1/auth/session` | Current authenticated principal |
+| `POST` | `/auth/recovery/request` | Request a password reset (non-enumerating response) |
+| `POST` | `/auth/recovery/reset` | Reset the password with a recovery token |
+| `POST` | `/auth/cookie/login` | Browser login using secure session and CSRF cookies |
+| `POST` | `/auth/cookie/logout` | Revoke and clear browser cookies; requires CSRF |
 
-Protected routes (require `Authorization: Bearer <token>`):
+When `FORGE_AUTH_MFA_KEY` is configured, MFA completion routes are also
+registered at `/auth/mfa/complete` and `/auth/cookie/mfa/complete`. Browser
+cookie routes require a secure same-origin HTTPS `Origin` and unsafe cookie
+requests require CSRF validation.
 
-| Method | Path | Description |
-| ------ | ---- | ----------- |
-| `GET` | `/v1/me` | Current authenticated principal |
-| `POST` | `/v1/auth/mfa/enroll` | Start TOTP enrollment |
-| `POST` | `/v1/auth/mfa/confirm` | Confirm TOTP enrollment (returns backup codes) |
-| `POST` | `/v1/auth/mfa/disable` | Disable MFA (revokes sessions) |
-| `POST` | `/v1/auth/sessions/revoke` | Revoke all sessions for current user |
-
-**Configuration required in `.env.development` (and production):**
-- `FORGE_MFA_ENCRYPTION_KEY` — 32-byte base64 key for encrypting TOTP seeds. Generate with `openssl rand -base64 32`.
-
-**Note:** The MFA management endpoints currently allow any authenticated principal. A production application should add step-up authorization requiring recent password verification or another strong factor before allowing enrollment/rotation/disable.
+Password recovery primitives and routes are generated, but delivery is
+intentionally fail-closed until the application wires a `RecoverySender`.
+Requests still return the same accepted response to avoid account enumeration;
+the application logs a generic configuration error and invalidates the token.
+No recovery token or recipient is written to logs. Configure a delivery
+adapter before advertising password recovery to users.
+{{- end}}
 
 | Path | Purpose |
 | --- | --- |
@@ -101,6 +103,9 @@ Protected routes (require `Authorization: Bearer <token>`):
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
 | `.env.development` | Development settings for the `forge` commands (no secrets) |
+{{- if and .DB .DB.Identity}}
+| `.env.local` | Git-ignored local MFA key and private overrides |
+{{- end}}
 
 Domain, application, adapter and infrastructure packages live under `app/`
 and are added as the application grows.
@@ -120,16 +125,21 @@ The generated API exposes:
 - `GET /v1/auth/session` as an authenticated example returning the current
   subject, tenant, and permissions.
 
-If `FORGE_AUTH_MFA_KEY` is configured, the generated app also wires
+The generated `.env.local` contains a unique development-only key for local
+MFA seed encryption. It is git-ignored and loaded by both `forge` and Docker
+Compose. Never reuse this development key in production; configure a separate
+secret there. If `FORGE_AUTH_MFA_KEY` is configured, the generated app wires
 `POST /auth/mfa/complete`. The value must be canonical unpadded base64url for
 exactly 32 random bytes and belongs in `.env.local` during development or a
 secret manager in deployed environments. It is never stored in the identity
 database.
 
-Run `migrate` before serving so the Forge identity tables exist. TOTP
-enrollment/rotation, browser-cookie auth, account recovery delivery, and
-user-registration policy remain application opt-ins because they require
-step-up policy, HTTPS/browser choices, or an external delivery provider.
+Run `migrate` before serving so the Forge identity tables exist. Account
+provisioning and MFA enrollment/rotation remain application opt-ins because
+they require application policy and step-up authorization. Browser-cookie
+routes are available for HTTPS applications. Password recovery delivery must
+be configured by the application; it can use a self-hosted SMTP server and
+does not require a particular email SaaS provider.
 {{- end}}
 
 ## Deploy

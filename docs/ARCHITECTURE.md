@@ -30,6 +30,7 @@ labelled as such; see [ROADMAP.md](ROADMAP.md).
 Core (standard library only)
 forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown hooks, health routes
 ├── auth         Opaque sessions, principal context, bearer middleware, authorization
+├── agent        Provider-neutral allowlisted action policy and execution pipeline
 ├── tenancy      Fail-closed tenant context
 ├── config       Config struct, defaults, environment loading, validation, Secret
 ├── router       Route registry on http.ServeMux
@@ -47,6 +48,7 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 Adapters (may use third-party modules)
 postgres               PostgreSQL: pgx v5 pool, transactions, translation, advisory locks, migration dialect
 outbox/postgres        Transactional outbox persistence, leases, and dispatcher
+agent/postgres         Tenant-RLS-protected execution journal for registered agent actions
 postgres/postgrestest  Per-test PostgreSQL databases
 mysql                  MySQL and MariaDB: go-sql-driver/mysql pool, translation, migration dialect
 mysql/mysqltest        Per-test MySQL/MariaDB databases
@@ -432,7 +434,7 @@ the database pool directly in `app/bootstrap`.
 
 ## Not yet implemented
 
-Outbox dispatch and background jobs, OpenTelemetry, OpenAPI generation, the AI
-execution subsystem, and resource generators (`forge generate` currently
-creates migrations only). See
+OpenTelemetry, OpenAPI generation, the AI execution subsystem, and domain
+resource generators (`forge generate` supports SQL migrations and embedded
+HTML views). See
 [ROADMAP.md](ROADMAP.md).
