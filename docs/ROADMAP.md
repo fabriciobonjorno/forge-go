@@ -178,6 +178,10 @@ Implemented foundation:
   challenge and factor lifecycle operations. Audit persistence is opt-in for
   framework services; generated PostgreSQL login, MFA, and logout flows wire
   the repository as their auditor.
+- Optional authentication middleware and `RequireAudited` hooks for rejected
+  valid sessions and permission denials. These are opt-in because each rejected
+  valid token can cause a database write; deployments should limit request
+  volume and plan retention/capacity.
 
 Remaining boundaries: generated applications do not choose account
 provisioning, password-recovery delivery, browser-cookie routes, or MFA
@@ -188,8 +192,9 @@ only built-in identity persistence adapter and the only adapter with a
 database-enforced RLS helper. MySQL, MariaDB, and SQLite use the documented
 application-layer tenant-scoping contract; Forge does not claim equivalent
 database enforcement ([MULTI_TENANCY.md](MULTI_TENANCY.md)). Broader audit
-coverage for authorization denials and rejected session resolution remains a
-separate scope decision.
+coverage for missing/malformed credentials and infrastructure failures during
+session resolution is intentionally omitted to avoid persisting unbounded
+untrusted input or coupling audit availability to resolver outages.
 
 ## Phase 4 - Asynchronous work
 

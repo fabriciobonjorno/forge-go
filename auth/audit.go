@@ -18,6 +18,8 @@ const (
 	SecurityLoginThrottled       SecurityEventKind = "auth.login.throttled"
 	SecuritySessionRevoked       SecurityEventKind = "auth.session.revoked"
 	SecuritySessionsRevoked      SecurityEventKind = "auth.sessions.revoked"
+	SecuritySessionRejected      SecurityEventKind = "auth.session.rejected"
+	SecurityAuthorizationDenied  SecurityEventKind = "auth.authorization.denied"
 	SecurityRecoveryRequested    SecurityEventKind = "auth.recovery.requested"
 	SecurityPasswordReset        SecurityEventKind = "auth.password.reset"
 	SecurityMFAEnrollmentStarted SecurityEventKind = "auth.mfa.enrollment_started"
