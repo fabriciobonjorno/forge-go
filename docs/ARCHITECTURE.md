@@ -1,7 +1,7 @@
 # Architecture
 
-This document describes the Forge framework as it exists today (Phases 1 and
-2) and the layout it prescribes for generated applications. Planned work is
+This document describes the Forge framework foundations and the layout it
+prescribes for generated applications. Planned work is
 labelled as such; see [ROADMAP.md](ROADMAP.md).
 
 ## Principles
@@ -36,6 +36,7 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 ├── httpserver   http.Server, middleware chain, run/shutdown lifecycle
 ├── web          JSON responses, error format, strict decoding, request context values
 ├── pagination   UUIDv7 keyset pagination and cursors
+├── events       Versioned application-event envelope with bounded JSON payloads
 ├── health       Readiness check registry
 ├── uuid         UUIDv7 type and generator
 ├── fault        Typed application errors
@@ -45,6 +46,7 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 
 Adapters (may use third-party modules)
 postgres               PostgreSQL: pgx v5 pool, transactions, translation, advisory locks, migration dialect
+outbox/postgres        Transactional outbox event insert and schema migration
 postgres/postgrestest  Per-test PostgreSQL databases
 mysql                  MySQL and MariaDB: go-sql-driver/mysql pool, translation, migration dialect
 mysql/mysqltest        Per-test MySQL/MariaDB databases
@@ -67,12 +69,14 @@ Dependency direction (imports within the module):
 | `httpserver`            | `config`, `fault`, `uuid`, `web` |
 | `router`                | `fault`, `web` |
 | `pagination`            | `fault`, `uuid` |
+| `events`                | `uuid` |
 | `web`                   | `fault` |
 | `sqldb`                 | `config`, `fault` |
 | `migrate`               | `forge`, `config` |
 | `dbtest`                | `config`, `migrate`, `uuid` |
 | `config`, `fault`, `health`, `uuid` | standard library only |
 | `postgres`              | `forge`, `config`, `migrate`, `sqldb`, `tenancy`, pgx v5 |
+| `outbox/postgres`       | `events`, `postgres` |
 | `mysql`                 | `forge`, `config`, `migrate`, `sqldb`, go-sql-driver/mysql |
 | `sqlite`                | `forge`, `config`, `migrate`, `sqldb`, modernc.org/sqlite |
 | `postgrestest`, `mysqltest`, `sqlitetest` | their adapter, `config`, `dbtest`, `migrate` (and `sqldb` or pgx) |
@@ -419,11 +423,17 @@ the database pool directly in `app/bootstrap`.
 | [0008](adr/0008-sql-migrations-embedded-in-the-binary.md) | SQL migrations embedded in the application binary (amended by 0009) |
 | [0009](adr/0009-multiple-databases.md) | Multiple databases: PostgreSQL, MySQL, MariaDB and SQLite |
 | [0010](adr/0010-opaque-sessions-and-fail-closed-tenancy.md) | Opaque sessions and fail-closed tenancy |
+| [0011](adr/0011-login-throttling.md) | Login throttling by account and source |
+| [0012](adr/0012-cookie-sessions-and-csrf.md) | Explicit secure-cookie sessions with double-submit CSRF |
+| [0013](adr/0013-password-recovery.md) | One-time password recovery with global session revocation |
+| [0014](adr/0014-totp-mfa.md) | TOTP MFA with encrypted seeds and replay-safe challenges |
+| [0015](adr/0015-mfa-factor-lifecycle.md) | MFA factor rotation and disable require step-up |
+| [0016](adr/0016-structured-security-audit.md) | Structured security audit without arbitrary payloads |
+| [0017](adr/0017-transactional-outbox-foundation.md) | Transactional outbox foundation |
 
 ## Not yet implemented
 
-A concrete identity/session repository, password and browser authentication,
-generated identity schemas, background jobs, events/outbox, OpenTelemetry,
-OpenAPI generation, the AI execution subsystem, and resource generators
-(`forge generate` currently creates migrations only). See
+Outbox dispatch and background jobs, OpenTelemetry, OpenAPI generation, the AI
+execution subsystem, and resource generators (`forge generate` currently
+creates migrations only). See
 [ROADMAP.md](ROADMAP.md).

@@ -1,6 +1,6 @@
 # Roadmap
 
-Phases are sequential in intent but may overlap. Status reflects the `main`
+Phases are sequential in intent but may overlap. Status reflects the current
 branch. Nothing in a phase marked *planned* is implemented.
 
 | Phase | Scope                                              | Status  |
@@ -9,7 +9,7 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 1     | Core runtime, config, CLI, lifecycle, HTTP         | Done    |
 | 2     | Databases, migrations, repositories, transactions  | Done    |
 | 3     | Authentication, authorization, tenancy             | In progress |
-| 4     | Jobs, events, outbox, scheduling                   | Planned |
+| 4     | Jobs, events, outbox, scheduling                   | In progress |
 | 5     | OpenTelemetry                                      | Planned |
 | 6     | OpenAPI and tooling                                | Planned |
 | 7     | AI API and CLI subsystem                           | Planned |
@@ -193,7 +193,9 @@ separate scope decision.
 
 ## Phase 4 - Asynchronous work
 
-Background jobs, domain events, a transactional outbox, and scheduling.
+The event envelope and PostgreSQL transactional outbox insert are implemented
+as the foundation. Dispatch, retries, background jobs, and scheduling remain
+planned; see [ADR 0017](adr/0017-transactional-outbox-foundation.md).
 
 ## Phase 5 - Observability
 
