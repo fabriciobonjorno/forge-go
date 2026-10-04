@@ -46,7 +46,7 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 
 Adapters (may use third-party modules)
 postgres               PostgreSQL: pgx v5 pool, transactions, translation, advisory locks, migration dialect
-outbox/postgres        Transactional outbox event insert and schema migration
+outbox/postgres        Transactional outbox persistence, leases, and dispatcher
 postgres/postgrestest  Per-test PostgreSQL databases
 mysql                  MySQL and MariaDB: go-sql-driver/mysql pool, translation, migration dialect
 mysql/mysqltest        Per-test MySQL/MariaDB databases

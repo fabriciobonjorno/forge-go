@@ -15,10 +15,11 @@ flows, recovery and MFA primitives, and security auditing. Its remaining
 scope and adapter boundaries are listed in the roadmap. APIs may change
 without notice until a tagged release.
 
-The PostgreSQL transactional outbox foundation is implemented; dispatch,
-background jobs, scheduling, OpenTelemetry, OpenAPI, resource code generation,
-performance work, and further security hardening remain planned. See
-[docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
+The PostgreSQL transactional outbox now supports bounded concurrent delivery,
+leases, acknowledgements, and bounded retries. Background jobs, scheduling,
+OpenTelemetry, OpenAPI, resource code generation, performance work, and further
+security hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for
+the full status.
 
 ## Packages
 
@@ -50,7 +51,7 @@ Adapter packages (third-party dependencies allowed):
 | Package                 | Purpose |
 | ----------------------- | ------- |
 | `postgres`              | PostgreSQL on pgx v5: pool, `DBTX`, transactions with retry, error translation, advisory locks, migrations |
-| `outbox/postgres`       | PostgreSQL transactional outbox insert and schema migration |
+| `outbox/postgres`       | PostgreSQL transactional outbox persistence and concurrent dispatcher |
 | `mysql`                 | MySQL and MariaDB on go-sql-driver/mysql: hardened session, error translation, migrations |
 | `sqlite`                | SQLite on the pure-Go modernc.org/sqlite: enforced pragmas, error translation, migrations with a file lock |
 | `postgres/postgrestest`, `mysql/mysqltest`, `sqlite/sqlitetest` | A fresh database per test |

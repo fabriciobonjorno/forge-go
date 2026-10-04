@@ -381,12 +381,17 @@ or change state outside the transaction, because those effects either repeat
 or remain after a rollback. Do such work after the transaction commits.
 The Phase 4 foundation provides `events.Event` and
 `outbox/postgres.Insert`. Pass the active `pgx.Tx` from `postgres.InTx` so the
-event row commits or rolls back with the domain change. This first slice
-persists events only; it does not dispatch them. Delivery, retries, and
-consumer idempotency are not yet provided. See
-[ADR 0017](adr/0017-transactional-outbox-foundation.md).
-The initial outbox schema migration is intentionally irreversible because its
-rollback would delete persisted event data.
+event row commits or rolls back with the domain change. A PostgreSQL
+dispatcher can deliver these events with bounded concurrency and retries;
+delivery is at-least-once, so consumers must be idempotent. Start it with
+`outbox/postgres.NewDispatcher(db.Pool(), handler, options)` and run it under
+an application-owned context. Handler calls happen outside database
+transactions, and the dispatcher renews its lease while the handler runs.
+Dead-letter rows are retained for operator inspection; automated replay and
+queue metrics are not yet provided. See
+[ADR 0017](adr/0017-transactional-outbox-foundation.md) and
+[ADR 0018](adr/0018-outbox-dispatch.md). Both outbox migrations are
+intentionally irreversible because rollback would delete persisted event data.
 
 ## Optimistic locking
 
