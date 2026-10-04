@@ -193,9 +193,13 @@ separate scope decision.
 
 ## Phase 4 - Asynchronous work
 
-The event envelope and PostgreSQL transactional outbox insert are implemented
-as the foundation. Dispatch, retries, background jobs, and scheduling remain
-planned; see [ADR 0017](adr/0017-transactional-outbox-foundation.md).
+The event envelope, atomic PostgreSQL persistence, and bounded concurrent
+dispatcher with renewable leases, token-fenced acknowledgements, exponential
+retry, and a terminal dead-letter state are implemented. Delivery is
+at-least-once; consumers must be idempotent. Dead-letter inspection/replay,
+queue metrics, background jobs, and scheduling remain planned; see
+[ADR 0017](adr/0017-transactional-outbox-foundation.md) and
+[ADR 0018](adr/0018-outbox-dispatch.md).
 
 ## Phase 5 - Observability
 
