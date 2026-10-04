@@ -101,3 +101,29 @@ func TestListDeadLettersRejectsUnboundedOrInvalidRequests(t *testing.T) {
 		t.Fatal("ListDeadLetters accepted an invalid cursor")
 	}
 }
+
+func TestReplayDeadLetterResetsEventToQueue(t *testing.T) {
+	db := postgrestest.NewMigrated(t, Migrations())
+	created := insertEvents(t, db, 1)
+	if _, err := db.Exec(context.Background(), `UPDATE forge_outbox_events SET dead_lettered_at = clock_timestamp() WHERE id = $1`, created[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewDispatcher(db.Pool(), func(context.Context, events.Event) error { return nil }, DispatcherOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ReplayDeadLetter(context.Background(), created[0].ID); err != nil {
+		t.Fatalf("ReplayDeadLetter failed: %v", err)
+	}
+	stats, err := d.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DeadLettered != 0 || stats.Ready != 1 {
+		t.Fatalf("stats after replay = %+v, want dead_lettered=0 ready=1", stats)
+	}
+	// Replaying an already replayed event should fail
+	if err := d.ReplayDeadLetter(context.Background(), created[0].ID); err == nil {
+		t.Fatal("ReplayDeadLetter on non-dead-lettered event succeeded, want error")
+	}
+}

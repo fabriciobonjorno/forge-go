@@ -20,6 +20,7 @@ var corePackages = []string{
 	modulePath + "/events",
 	modulePath + "/fault",
 	modulePath + "/health",
+	modulePath + "/jobs",
 	modulePath + "/migrate",
 	modulePath + "/httpserver",
 	modulePath + "/pagination",

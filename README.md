@@ -11,15 +11,18 @@ Pre-release. Phases 1 (core runtime, configuration, CLI, lifecycle, HTTP) and
 2 (databases, migrations, transactions, repositories) are implemented,
 including support for several databases. Phase 3 provides an identity and
 tenancy foundation with PostgreSQL persistence, password and browser-session
-flows, recovery and MFA primitives, and security auditing. Its remaining
-scope and adapter boundaries are listed in the roadmap. APIs may change
+flows, recovery and MFA primitives, and security auditing. Phase 4 adds
+background jobs, a transactional outbox with bounded concurrent dispatch,
+dead-letter replay, and an in-process scheduler. Its remaining scope and
+adapter boundaries are listed in the roadmap. APIs may change
 without notice until a tagged release.
 
-The PostgreSQL transactional outbox now supports bounded concurrent delivery,
-leases, acknowledgements, and bounded retries. Background jobs, scheduling,
-OpenTelemetry, OpenAPI, resource code generation, performance work, and further
-security hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for
-the full status.
+The PostgreSQL transactional outbox supports bounded concurrent delivery,
+leases, acknowledgements, bounded retries, dead-letter replay, and queue
+metrics. An in-process job scheduler (`jobs.Scheduler`) runs recurring work
+with configurable concurrency. OpenTelemetry, OpenAPI, resource code
+generation, performance work, and further security hardening remain
+planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 
 ## Packages
 
@@ -38,7 +41,8 @@ Core packages import only the standard library and each other; a test
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown |
 | `web`        | JSON responses, the single error format, strict JSON decoding, request ID and request-scoped logger |
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
-| `events` | Versioned event envelope with bounded JSON payloads |
+| `events`     | Versioned event envelope with bounded JSON payloads |
+| `jobs`       | In-process job scheduler with fixed-rate, daily, and cron schedules |
 | `health`     | Readiness check registry; `/health`, `/health/live`, `/health/ready` |
 | `uuid`       | RFC 9562 UUIDv7 (default identifier), monotonic generator, JSON/text/SQL support |
 | `fault`      | Typed application errors (code, message, category, cause, metadata, retryable, HTTP status) |

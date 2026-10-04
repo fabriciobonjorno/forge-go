@@ -9,7 +9,7 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 1     | Core runtime, config, CLI, lifecycle, HTTP         | Done    |
 | 2     | Databases, migrations, repositories, transactions  | Done    |
 | 3     | Authentication, authorization, tenancy             | In progress |
-| 4     | Jobs, events, outbox, scheduling                   | In progress |
+| 4     | Jobs, events, outbox, scheduling                   | Done    |
 | 5     | OpenTelemetry                                      | Planned |
 | 6     | OpenAPI and tooling                                | Planned |
 | 7     | AI API and CLI subsystem                           | Planned |
@@ -195,11 +195,12 @@ separate scope decision.
 
 The event envelope, atomic PostgreSQL persistence, and bounded concurrent
 dispatcher with renewable leases, token-fenced acknowledgements, exponential
-retry, and a terminal dead-letter state are implemented. Delivery is
-at-least-once; consumers must be idempotent. Dead-letter inspection/replay,
-queue metrics, background jobs, and scheduling remain planned; see
-[ADR 0017](adr/0017-transactional-outbox-foundation.md) and
-[ADR 0018](adr/0018-outbox-dispatch.md).
+retry, and a terminal dead-letter state are implemented. Dead-letter replay,
+queue metrics (`Dispatcher.Stats`, `ListDeadLetters`), an in-process job
+scheduler (`jobs.Scheduler`), and generated-application wiring are complete.
+See [ADR 0017](adr/0017-transactional-outbox-foundation.md),
+[ADR 0018](adr/0018-outbox-dispatch.md), and
+[ADR 0019](adr/0019-background-jobs-scheduling.md).
 
 ## Phase 5 - Observability
 

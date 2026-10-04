@@ -17,11 +17,11 @@ const MaxDeadLetterPageSize = 100
 // time. OldestPendingAt is nil when no undelivered, non-dead-lettered event
 // exists. Counts are global because the outbox is a trusted global worker.
 type QueueStats struct {
-	Ready             int64
-	Scheduled         int64
-	Leased            int64
-	DeadLettered      int64
-	OldestPendingAt   *time.Time
+	Ready           int64
+	Scheduled       int64
+	Leased          int64
+	DeadLettered    int64
+	OldestPendingAt *time.Time
 }
 
 // DeadLetter is the operational metadata for a terminal event. Payloads and
@@ -144,4 +144,30 @@ func (d *Dispatcher) ListDeadLetters(ctx context.Context, after *DeadLetterCurso
 		page.Next = &DeadLetterCursor{DeadLetteredAt: last.DeadLetteredAt, ID: last.ID}
 	}
 	return page, nil
+}
+
+// ReplayDeadLetter resets a terminal event back to the dispatch queue.
+// The event must be in the dead-lettered state. Its attempt count is reset
+// and it becomes immediately available for claiming. Payload and metadata
+// are unchanged; operator intent is the only authority for replay.
+func (d *Dispatcher) ReplayDeadLetter(ctx context.Context, id uuid.UUID) error {
+	if ctx == nil {
+		return errors.New("outbox replay context is required")
+	}
+	tag, err := d.pool.Exec(ctx, `
+		UPDATE forge_outbox_events
+		SET attempts = 0,
+		    available_at = clock_timestamp(),
+		    dead_lettered_at = NULL,
+		    lease_token = NULL,
+		    lease_until = NULL
+		WHERE id = $1 AND dead_lettered_at IS NOT NULL
+	`, id)
+	if err != nil {
+		return fmt.Errorf("replay outbox dead letter: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("outbox dead letter not found or already replayed")
+	}
+	return nil
 }
