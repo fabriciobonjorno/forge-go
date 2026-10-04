@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app/bootstrap/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="280">
+</p>
+
 # {{.Name}}
 
 A [Forge](https://github.com/fabriciobonjorno/forge-go) application.
@@ -8,6 +12,12 @@ With Docker (the default):
 
 ```bash
 docker compose up --build
+```
+
+Then open `http://127.0.0.1:8080/` to see the Forge welcome screen, or check
+the JSON service endpoint:
+
+```bash
 curl http://127.0.0.1:8080/v1/status
 ```
 {{- if .DB}}
@@ -52,7 +62,34 @@ forge rollback                           # revert the latest migration
 {{- end}}
 ```
 
-## Layout
+## Authentication (generated with database)
+
+The following endpoints are registered by `bootstrap.Configure`:
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `POST` | `/v1/auth/token/login` | Bearer token login (returns `access_token`) |
+| `POST` | `/v1/auth/login` | Secure cookie login (sets `__Host-forge_session` + `__Host-forge_csrf`) |
+| `POST` | `/v1/auth/token/logout` | Bearer logout (revokes token) |
+| `POST` | `/v1/auth/logout` | Cookie logout (revokes + clears cookies, requires CSRF) |
+| `POST` | `/v1/auth/mfa` | MFA completion (cookie) — submit challenge + TOTP code |
+| `POST` | `/v1/auth/recovery` | Request password recovery link (non-enumerating) |
+| `POST` | `/v1/auth/reset` | Reset password with recovery token |
+
+Protected routes (require `Authorization: Bearer <token>`):
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/v1/me` | Current authenticated principal |
+| `POST` | `/v1/auth/mfa/enroll` | Start TOTP enrollment |
+| `POST` | `/v1/auth/mfa/confirm` | Confirm TOTP enrollment (returns backup codes) |
+| `POST` | `/v1/auth/mfa/disable` | Disable MFA (revokes sessions) |
+| `POST` | `/v1/auth/sessions/revoke` | Revoke all sessions for current user |
+
+**Configuration required in `.env.development` (and production):**
+- `FORGE_MFA_ENCRYPTION_KEY` — 32-byte base64 key for encrypting TOTP seeds. Generate with `openssl rand -base64 32`.
+
+**Note:** The MFA management endpoints currently allow any authenticated principal. A production application should add step-up authorization requiring recent password verification or another strong factor before allowing enrollment/rotation/disable.
 
 | Path | Purpose |
 | --- | --- |

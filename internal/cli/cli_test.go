@@ -70,7 +70,7 @@ func TestRunNewGeneratesApplicationWithoutDependencies(t *testing.T) {
 			t.Fatalf("missing %s: %v", path, err)
 		}
 	}
-	if !strings.Contains(stdout.String(), "docker compose up --build") {
+	if !strings.Contains(stdout.String(), "docker compose up --build") || !strings.Contains(stdout.String(), "http://127.0.0.1:8080/") {
 		t.Fatalf("missing next steps: %s", stdout.String())
 	}
 }

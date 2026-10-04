@@ -5,7 +5,9 @@ package scaffold
 
 import (
 	"bytes"
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"go/format"
@@ -20,7 +22,7 @@ import (
 // FrameworkModule is the module path generated applications depend on.
 const FrameworkModule = "github.com/fabriciobonjorno/forge-go"
 
-//go:embed templates/*.tmpl
+//go:embed all:templates
 var templateFS embed.FS
 
 var (
@@ -57,6 +59,8 @@ type templateData struct {
 	AppDatabaseURL  string
 	DevDatabaseURL  string
 	TestDatabaseURL string
+	// MFAEncryptionKey is the base64-encoded 32-byte key for MFA secret encryption.
+	MFAEncryptionKey string
 }
 
 type file struct {
@@ -66,6 +70,11 @@ type file struct {
 	databaseOnly bool
 }
 
+type asset struct {
+	source string
+	target string
+}
+
 func fixed(path string) func(string) string { return func(string) string { return path } }
 
 var files = []file{
@@ -73,6 +82,7 @@ var files = []file{
 	{"main.go.tmpl", func(name string) string { return filepath.Join("cmd", name, "main.go") }, false},
 	{"bootstrap.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap.go")), false},
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), false},
+	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), false},
 	{"Dockerfile.tmpl", fixed("Dockerfile"), false},
 	{"dockerignore.tmpl", fixed(".dockerignore"), false},
 	{"compose.yaml.tmpl", fixed("compose.yaml"), false},
@@ -84,6 +94,11 @@ var files = []file{
 	{"db.go.tmpl", fixed(filepath.Join("db", "db.go")), true},
 	{"keep.tmpl", fixed(filepath.Join("db", "migrations", ".keep")), true},
 }
+
+var assets = []asset{{
+	source: "templates/assets/forge-go-logo.png",
+	target: filepath.Join("app", "bootstrap", "assets", "forge-go-logo.png"),
+}}
 
 // Normalize validates options and fills defaults.
 func Normalize(opts Options) (Options, error) {
@@ -124,7 +139,7 @@ func Generate(opts Options) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	paths := make([]string, 0, len(files))
+	paths := make([]string, 0, len(files)+len(assets))
 	for _, f := range selectedFiles(opts) {
 		relative := f.path(opts.Name)
 		target := filepath.Join(opts.Dir, relative)
@@ -135,6 +150,20 @@ func Generate(opts Options) ([]string, error) {
 			return nil, cleanup(opts.Dir, created, err)
 		}
 		paths = append(paths, relative)
+	}
+	for _, asset := range assets {
+		content, err := templateFS.ReadFile(asset.source)
+		if err != nil {
+			return nil, cleanup(opts.Dir, created, fmt.Errorf("read asset %s: %w", asset.source, err))
+		}
+		target := filepath.Join(opts.Dir, asset.target)
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return nil, cleanup(opts.Dir, created, err)
+		}
+		if err := os.WriteFile(target, content, 0o600); err != nil {
+			return nil, cleanup(opts.Dir, created, err)
+		}
+		paths = append(paths, asset.target)
 	}
 	return paths, nil
 }
@@ -148,6 +177,14 @@ func render(opts Options) (map[string][]byte, error) {
 	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)
 	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
 		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
+	}
+	// Generate MFA encryption key for databases
+	if data.DB != nil {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("generate MFA encryption key: %w", err)
+		}
+		data.MFAEncryptionKey = base64.StdEncoding.EncodeToString(key)
 	}
 	output := make(map[string][]byte, len(files))
 	for _, f := range selectedFiles(opts) {
