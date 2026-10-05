@@ -56,6 +56,8 @@ forge build                              # static binary in bin/{{.Name}}
 docker build -t {{.Name}} .                  # production image
 forge generate view welcome --dry-run     # preview files without writing
 forge generate view welcome              # embedded, auto-escaped HTML template
+forge generate job cleanup --dry-run      # preview a job stub and its tests
+forge generate job cleanup               # create files under app/jobs/
 {{- if .DB}}
 forge generate migration create_widgets --dry-run # preview exact migration files
 forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql

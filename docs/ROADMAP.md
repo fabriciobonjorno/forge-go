@@ -10,7 +10,7 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 2     | Databases, migrations, repositories, transactions  | Done    |
 | 3     | Authentication, authorization, tenancy             | In progress |
 | 4     | Jobs, events, outbox, scheduling                   | Done    |
-| 5     | OpenTelemetry                                      | Planned |
+| 5     | OpenTelemetry                                      | In progress |
 | 6     | OpenAPI and tooling                                | Planned |
 | 7     | AI API and CLI subsystem                           | In progress |
 | 8     | Code generation                                    | Planned |
@@ -215,7 +215,19 @@ See [ADR 0018](adr/0018-transactional-outbox-foundation.md),
 
 ## Phase 5 - Observability
 
-OpenTelemetry traces, metrics, and log correlation.
+Foundation:
+
+- [x] Optional application HTTP middleware composition through
+  `forge.WithHTTPMiddleware`, with request-ID context, body limits, panic
+  recovery, and security headers preserved.
+
+Remaining:
+
+- [ ] OpenTelemetry server spans and trace-context propagation.
+- [ ] Bounded-cardinality HTTP metrics and a documented export path.
+- [ ] Correlate structured logs with active trace/span identifiers.
+- [ ] Add database and background-job instrumentation without coupling the
+  standard-library core to an exporter or external observability service.
 
 ## Phase 6 - API tooling
 
@@ -290,8 +302,9 @@ otherwise):
   correct database-specific isolation pattern and cross-tenant tests.
 - [ ] Resource-generator `--dry-run` and refuse-overwrite behavior with stable,
   reviewable output (migration/view previews are implemented separately).
-- [ ] `forge generate job NAME`: bounded execution, shutdown behavior,
-  retries/idempotency guidance and generated tests.
+- [x] `forge generate job NAME`: cancellation-aware job stub and generated
+  tests; docs cover bounded scheduler concurrency, shutdown context,
+  idempotency across replicas, and the absence of automatic retries.
 - [x] `forge generate view NAME`: embedded server-rendered Go HTML template
   with contextual escaping and buffered execution; no database write semantics.
 - [ ] SQL view generators remain separate from server-rendered HTML and need

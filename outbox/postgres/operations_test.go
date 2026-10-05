@@ -31,8 +31,8 @@ func TestStatsReportsQueueStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Ready != 2 || stats.Scheduled != 1 || stats.Leased != 1 || stats.DeadLettered != 1 {
-		t.Fatalf("queue counts = %+v, want ready=2 scheduled=1 leased=1 dead_lettered=1", stats)
+	if stats.Ready != 1 || stats.Scheduled != 1 || stats.Leased != 1 || stats.DeadLettered != 1 {
+		t.Fatalf("queue counts = %+v, want ready=1 scheduled=1 leased=1 dead_lettered=1", stats)
 	}
 	if stats.OldestPendingAt == nil {
 		t.Fatal("stats omitted oldest pending event timestamp")

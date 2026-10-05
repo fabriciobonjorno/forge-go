@@ -57,19 +57,19 @@ func (d *Dispatcher) Stats(ctx context.Context) (QueueStats, error) {
 	var stats QueueStats
 	var oldest pgtype.Timestamptz
 	err := d.pool.QueryRow(ctx, `
-		WITH current_time AS (SELECT clock_timestamp() AS value)
+		WITH probe_clock AS (SELECT clock_timestamp() AS value)
 		SELECT
-			(SELECT count(*) FROM forge_outbox_events, current_time
+			(SELECT count(*) FROM forge_outbox_events, probe_clock
 			 WHERE delivered_at IS NULL AND dead_lettered_at IS NULL
-			   AND available_at <= current_time.value
-			   AND (lease_until IS NULL OR lease_until <= current_time.value)),
-			(SELECT count(*) FROM forge_outbox_events, current_time
+			   AND available_at <= probe_clock.value
+			   AND (lease_until IS NULL OR lease_until <= probe_clock.value)),
+			(SELECT count(*) FROM forge_outbox_events, probe_clock
 			 WHERE delivered_at IS NULL AND dead_lettered_at IS NULL
-			   AND available_at > current_time.value
-			   AND (lease_until IS NULL OR lease_until <= current_time.value)),
-			(SELECT count(*) FROM forge_outbox_events, current_time
+			   AND available_at > probe_clock.value
+			   AND (lease_until IS NULL OR lease_until <= probe_clock.value)),
+			(SELECT count(*) FROM forge_outbox_events, probe_clock
 			 WHERE delivered_at IS NULL AND dead_lettered_at IS NULL
-			   AND lease_until > current_time.value),
+			   AND lease_until > probe_clock.value),
 			(SELECT count(*) FROM forge_outbox_events WHERE dead_lettered_at IS NOT NULL),
 			(SELECT min(enqueued_at) FROM forge_outbox_events
 			 WHERE delivered_at IS NULL AND dead_lettered_at IS NULL)

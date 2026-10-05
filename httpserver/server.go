@@ -25,16 +25,45 @@ type Server struct {
 	logger          *slog.Logger
 }
 
+// Middleware wraps an HTTP handler. Middleware is applied in the order passed
+// to NewWithMiddleware: the first middleware is the outermost custom layer.
+// Forge's request ID and security headers remain outside custom middleware;
+// custom middleware remains inside body limiting and panic recovery.
+type Middleware func(http.Handler) http.Handler
+
 func New(cfg config.Config, handler http.Handler, logger *slog.Logger) (*Server, error) {
+	return NewWithMiddleware(cfg, handler, logger)
+}
+
+// NewWithMiddleware constructs the standard Forge server with optional
+// application middleware around the handler.
+func NewWithMiddleware(
+	cfg config.Config,
+	handler http.Handler,
+	logger *slog.Logger,
+	middlewares ...Middleware,
+) (*Server, error) {
 	if handler == nil || logger == nil {
 		return nil, errors.New("HTTP handler and logger are required")
+	}
+	for _, middleware := range middlewares {
+		if middleware == nil {
+			return nil, errors.New("HTTP middleware is required")
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	wrappedHandler := handler
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		wrappedHandler = middlewares[i](wrappedHandler)
+		if wrappedHandler == nil {
+			return nil, errors.New("HTTP middleware returned a nil handler")
+		}
+	}
 	// Outermost first: every response, including 413 and recovered panics,
 	// carries the security headers and the request ID.
-	wrapped := securityHeaders(cfg, requestID(logger, recoverer(limitBody(cfg.HTTP.MaxBodyBytes, handler))))
+	wrapped := securityHeaders(cfg, requestID(logger, recoverer(limitBody(cfg.HTTP.MaxBodyBytes, wrappedHandler))))
 	return &Server{
 		server: &http.Server{
 			Addr:              cfg.HTTP.Address,

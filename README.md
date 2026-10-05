@@ -48,7 +48,7 @@ Core packages import only the standard library and each other; a test
 | `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
 | `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405` |
-| `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown |
+| `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown, and composable application middleware |
 | `web`        | JSON responses, the single error format, strict JSON decoding, request ID and request-scoped logger |
 | `views`      | Concurrent-safe server-rendered HTML templates with contextual escaping and buffered rendering |
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
@@ -129,6 +129,8 @@ escaping and are embedded into the application binary):
 ```sh
 forge generate view welcome --dry-run   # preview files without writing
 forge generate view welcome
+forge generate job cleanup --dry-run   # preview job and test files
+forge generate job cleanup
 ```
 
 The generator creates `app/views/welcome.gohtml` and, on the first view,
@@ -181,6 +183,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
 | `forge generate view NAME [--dry-run]` | Create or preview an embedded server-rendered Go HTML template with contextual escaping |
+| `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
@@ -212,6 +215,15 @@ Flags for `forge new`:
 `^[a-z][a-z0-9_]{0,99}$` and `db/migrations` to exist. If a migration with the
 same second already exists, the version is moved forward one second. It never
 overwrites a file.
+
+`forge generate job NAME [--dry-run]` creates `app/jobs/NAME.go` and its test
+file. The generated stub returns an explicit not-implemented error until it
+is replaced, so registering it cannot silently report successful work. It does
+not edit `bootstrap.JobsConfigure`: choose a schedule and register the handler
+there explicitly. `NAME` must be lowercase snake_case with each segment
+starting with a letter. Scheduler failures are reported but are not retried
+automatically; jobs that run on multiple replicas must be idempotent or use a
+PostgreSQL advisory lock when only one replica may perform a schedule tick.
 
 ### Development environment files
 

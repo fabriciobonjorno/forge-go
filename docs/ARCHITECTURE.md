@@ -132,7 +132,7 @@ list is in [DEPLOYMENT.md](DEPLOYMENT.md#environment-variables).
 
 ### httpserver
 
-Wraps the router in a fixed middleware chain, outermost first:
+Wraps the router in a fixed security/lifecycle chain, outermost first:
 
 1. **Security headers** - `X-Content-Type-Options: nosniff`,
    `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
@@ -151,7 +151,12 @@ Wraps the router in a fixed middleware chain, outermost first:
 4. **Body limit** - rejects a declared `Content-Length` above
    `FORGE_HTTP_MAX_BODY_BYTES` with a JSON `413` (`body_too_large`), and wraps
    the body in `http.MaxBytesReader` for undeclared or chunked bodies.
-5. **Router.**
+5. **Application middleware** - zero or more optional handlers registered
+   with `forge.WithHTTPMiddleware`. They run in declaration order, outermost
+   first among custom middleware, after the body limit and inside panic
+   recovery. They receive the framework request ID and may add request-scoped
+   context for tracing, metrics, or application-specific behavior.
+6. **Router.**
 
 Because security headers and the request ID come first, every response,
 including `413`, recovered panics, and router errors, carries them. Every

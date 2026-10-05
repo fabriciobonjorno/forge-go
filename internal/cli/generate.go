@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"go/format"
 	"io"
 	"io/fs"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+var jobName = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z][a-z0-9]*)*$`)
 
 func runGenerate(args []string, stdout io.Writer) error {
 	return runGenerateAt(args, stdout, ".")
@@ -26,7 +28,7 @@ func runGenerateAt(args []string, stdout io.Writer, root string) error {
 func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Time) error {
 	dryRun := len(args) == 3 && args[2] == "--dry-run"
 	if (len(args) != 2 && !dryRun) || (len(args) == 3 && !dryRun) {
-		return errors.New("usage: forge generate <migration|view> NAME [--dry-run]")
+		return errors.New("usage: forge generate <migration|view|job> NAME [--dry-run]")
 	}
 	var files []generatedFile
 	var err error
@@ -35,16 +37,21 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 		files, err = planMigration(root, args[1], now)
 	case "view":
 		files, err = planView(root, args[1])
+	case "job":
+		files, err = planJob(root, args[1])
 	default:
-		return errors.New("usage: forge generate <migration|view> NAME [--dry-run]")
+		return errors.New("usage: forge generate <migration|view|job> NAME [--dry-run]")
 	}
 	if err != nil {
 		return err
 	}
 	if !dryRun {
 		directories := []string{"db/migrations"}
-		if args[0] == "view" {
+		switch args[0] {
+		case "view":
 			directories = []string{"app/views"}
+		case "job":
+			directories = []string{"app/jobs"}
 		}
 		if err := applyGeneratedFiles(root, directories, files); err != nil {
 			return err
@@ -56,6 +63,16 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 			verb = "would create"
 		}
 		if _, err := fmt.Fprintf(stdout, "  %s  %s\n", verb, file.path); err != nil {
+			return err
+		}
+	}
+	if args[0] == "job" && !dryRun {
+		if _, err := fmt.Fprintln(stdout,
+			"  implement the job, then register it in bootstrap.JobsConfigure with an explicit schedule"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(stdout,
+			"  scheduled jobs must be idempotent across replicas; failures are reported but not retried automatically"); err != nil {
 			return err
 		}
 	}
@@ -98,6 +115,55 @@ const generatedView = `<!doctype html>
 	</main>
 </body>
 </html>
+`
+
+const generatedJob = `package jobs
+
+import (
+	"context"
+	"errors"
+)
+
+// Err{{Name}}NotImplemented prevents a generated placeholder from silently
+// reporting successful work. Replace the stub before registering this job.
+var Err{{Name}}NotImplemented = errors.New("{{name}} job is not implemented")
+
+// Run{{Name}} performs one {{name}} job invocation. The scheduler provides a
+// bounded context and cancels it during shutdown; honor cancellation promptly.
+// Every replica runs this job, so make the work idempotent or acquire a
+// PostgreSQL advisory lock when only one replica may perform a schedule tick.
+// Scheduler failures are reported but not retried automatically.
+func Run{{Name}}(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return Err{{Name}}NotImplemented
+}
+`
+
+const generatedJobTest = `package jobs
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+func TestRun{{Name}}RequiresImplementation(t *testing.T) {
+	t.Parallel()
+	if err := Run{{Name}}(context.Background()); !errors.Is(err, Err{{Name}}NotImplemented) {
+		t.Fatalf("Run{{Name}} error = %v, want Err{{Name}}NotImplemented", err)
+	}
+}
+
+func TestRun{{Name}}HonorsCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := Run{{Name}}(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run{{Name}} error = %v, want context.Canceled", err)
+	}
+}
 `
 
 // generateView adds an auto-escaped Go HTML template and a production-safe
@@ -158,6 +224,58 @@ func planView(root, name string) ([]generatedFile, error) {
 		return files, nil
 	}
 	return append(files, generatedFile{path: rendererPath, content: generatedViewRenderer}), nil
+}
+
+// planJob generates a cancellation-aware job stub and tests without editing
+// the application's composition root or registering a schedule implicitly.
+func planJob(root, name string) ([]generatedFile, error) {
+	if len(name) > 64 || !jobName.MatchString(name) {
+		return nil, errors.New("job name must be lowercase snake_case with letter-starting segments")
+	}
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, errors.New("go.mod not found: run this inside a Forge application")
+	}
+	defer func() { _ = projectRoot.Close() }()
+	if _, err := projectRoot.Stat("go.mod"); err != nil {
+		return nil, errors.New("go.mod not found: run this inside a Forge application")
+	}
+	jobPath := filepath.Join("app", "jobs", name+".go")
+	testPath := filepath.Join("app", "jobs", name+"_test.go")
+	if err := rejectExistingSymlinkPaths(projectRoot, []string{jobPath, testPath}); err != nil {
+		return nil, err
+	}
+	for _, path := range []string{jobPath, testPath} {
+		if _, err := projectRoot.Lstat(path); err == nil {
+			return nil, fmt.Errorf("refusing to overwrite %s", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	replacements := strings.NewReplacer("{{name}}", name, "{{Name}}", exportedJobName(name))
+	jobSource, err := format.Source([]byte(replacements.Replace(generatedJob)))
+	if err != nil {
+		return nil, fmt.Errorf("format generated job: %w", err)
+	}
+	testSource, err := format.Source([]byte(replacements.Replace(generatedJobTest)))
+	if err != nil {
+		return nil, fmt.Errorf("format generated job test: %w", err)
+	}
+	return []generatedFile{
+		{path: jobPath, content: string(jobSource)},
+		{path: testPath, content: string(testSource)},
+	}, nil
+}
+
+func exportedJobName(name string) string {
+	parts := strings.Split(name, "_")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, "")
 }
 
 // generateMigration writes an empty up/down pair under db/migrations. The

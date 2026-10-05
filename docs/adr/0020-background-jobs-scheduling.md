@@ -35,8 +35,10 @@ across process replicas without holding database locks during external I/O.
   receive a cancellation signal and must honor it promptly.
 - No persistence of job history or results in this phase. Observability is
   via structured logs and the outbox queue metrics (`Dispatcher.Stats`).
-- Generated applications get a `jobs` package skeleton and a `bootstrap`
-  helper to register jobs and start the scheduler from `forge.Main`.
+- Generated applications with a supported database expose a bootstrap helper
+  that starts the scheduler and stops it during application shutdown. The
+  `forge generate job` command creates a handler/test pair; registration and
+  schedule remain explicit in the composition root.
 
 ## Consequences
 

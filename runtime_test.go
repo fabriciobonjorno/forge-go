@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	forge "github.com/fabriciobonjorno/forge-go"
 	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/fabriciobonjorno/forge-go/web"
 )
 
 func envLookup(values map[string]string) func(string) (string, bool) {
@@ -249,5 +251,38 @@ func TestShutdownBudgetCancelsStuckRequests(t *testing.T) {
 	}
 	if deadline := <-hookDeadline; deadline.After(stoppedAt.Add(cfg.HTTP.ShutdownTimeout + 100*time.Millisecond)) {
 		t.Fatalf("hooks got a deadline %v after stop; drain and hooks must share one budget", deadline.Sub(stoppedAt))
+	}
+}
+
+func TestWithHTTPMiddlewareWrapsApplicationHandler(t *testing.T) {
+	t.Parallel()
+	var requestID string
+	middleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestID = web.RequestID(r.Context())
+			next.ServeHTTP(w, r)
+		})
+	}
+	app, err := forge.New(forge.WithHTTPMiddleware(middleware))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.HandleFunc("GET /middleware", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/middleware", nil))
+	requestIDMatches := recorder.Header().Get("X-Request-ID") == requestID
+	if recorder.Code != http.StatusNoContent || requestID == "" || !requestIDMatches {
+		t.Fatalf("status=%d request_id=%q response_request_id=%q", recorder.Code, requestID, recorder.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestWithHTTPMiddlewareRejectsNil(t *testing.T) {
+	t.Parallel()
+	if _, err := forge.New(forge.WithHTTPMiddleware(nil)); err == nil {
+		t.Fatal("nil HTTP middleware was accepted")
 	}
 }

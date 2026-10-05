@@ -119,6 +119,116 @@ func TestGenerateViewRefusesUnknownRendererWrapper(t *testing.T) {
 	}
 }
 
+func TestGenerateJobCreatesCancellationAwareStubAndTests(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\n")
+	var preview bytes.Buffer
+	if err := runGenerateAt([]string{"job", "cleanup_old_sessions", "--dry-run"}, &preview, root); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"app/jobs/cleanup_old_sessions.go", "app/jobs/cleanup_old_sessions_test.go"} {
+		if !strings.Contains(preview.String(), "would create") || !strings.Contains(preview.String(), path) {
+			t.Errorf("dry-run output missing %s: %s", path, preview.String())
+		}
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(path))); !os.IsNotExist(err) {
+			t.Errorf("dry-run created %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "app")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created directories: %v", err)
+	}
+
+	var output bytes.Buffer
+	if err := runGenerateAt([]string{"job", "cleanup_old_sessions"}, &output, root); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "register it in bootstrap.JobsConfigure") ||
+		!strings.Contains(output.String(), "not retried automatically") {
+		t.Fatalf("job guidance missing from output: %s", output.String())
+	}
+	jobPath := filepath.Join(root, "app", "jobs", "cleanup_old_sessions.go")
+	jobSource, err := os.ReadFile(jobPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"RunCleanupOldSessions",
+		"ErrCleanupOldSessionsNotImplemented",
+		"ctx.Err()",
+		"Every replica runs this job",
+		"PostgreSQL advisory lock",
+	} {
+		if !strings.Contains(string(jobSource), want) {
+			t.Errorf("generated job is missing %q", want)
+		}
+	}
+	testSource, err := os.ReadFile(filepath.Join(root, "app", "jobs", "cleanup_old_sessions_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(testSource), "TestRunCleanupOldSessionsHonorsCancellation") {
+		t.Fatalf("generated test does not cover cancellation: %s", testSource)
+	}
+	if err := runGenerateAt([]string{"job", "cleanup_old_sessions"}, &output, root); err == nil {
+		t.Fatal("existing job was overwritten")
+	}
+}
+
+func TestGenerateJobValidatesNamesAndApplicationRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, name := range []string{
+		"", "Cleanup", "../escape", "x-y", "cleanup__daily", "cleanup_", "cleanup_2fa", strings.Repeat("a", 65),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := planJob(root, name); err == nil {
+				t.Fatalf("accepted invalid job name %q", name)
+			}
+		})
+	}
+	if _, err := planJob(root, "cleanup"); err == nil {
+		t.Fatal("generated a job outside an application")
+	}
+}
+
+func TestGenerateJobRejectsSymlinkedDirectoryAndPartialCollision(t *testing.T) {
+	t.Parallel()
+	t.Run("symlinked directory", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		outside := t.TempDir()
+		writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\n")
+		if err := os.Mkdir(filepath.Join(root, "app"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, "app", "jobs")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if _, err := planJob(root, "cleanup"); err == nil {
+			t.Fatal("accepted a symlinked job directory")
+		}
+		entries, err := os.ReadDir(outside)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("symlink target was modified: entries=%v err=%v", entries, err)
+		}
+	})
+	t.Run("test file collision", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\n")
+		testPath := filepath.Join(root, "app", "jobs", "cleanup_test.go")
+		writeFile(t, testPath, "package jobs\n")
+		if _, err := planJob(root, "cleanup"); err == nil {
+			t.Fatal("accepted a collision with an existing generated test")
+		}
+		if _, err := os.Stat(filepath.Join(root, "app", "jobs", "cleanup.go")); !os.IsNotExist(err) {
+			t.Fatalf("generator left a partial file: %v", err)
+		}
+	})
+}
+
 func TestRunGenerateViewReportsCreatedFiles(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

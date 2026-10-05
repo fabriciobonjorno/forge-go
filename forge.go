@@ -37,8 +37,9 @@ func NewViewRenderer(templates fs.FS) (*ViewRenderer, error) {
 type Option func(*options) error
 
 type options struct {
-	config config.Config
-	logger *slog.Logger
+	config          config.Config
+	logger          *slog.Logger
+	httpMiddlewares []httpserver.Middleware
 }
 
 type App struct {
@@ -83,7 +84,7 @@ func New(opts ...Option) (*App, error) {
 	if err := app.registerHealthRoutes(); err != nil {
 		return nil, err
 	}
-	server, err := httpserver.New(app.config, app.router, app.logger)
+	server, err := httpserver.NewWithMiddleware(app.config, app.router, app.logger, settings.httpMiddlewares...)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +105,20 @@ func WithLogger(logger *slog.Logger) Option {
 			return errors.New("logger is required")
 		}
 		settings.logger = logger
+		return nil
+	}
+}
+
+// WithHTTPMiddleware adds middleware to the application's HTTP handler chain.
+// Options are applied in declaration order, outermost first among custom
+// middleware. Forge's request ID and security headers remain outermost; body
+// limits and panic recovery still protect the custom middleware chain.
+func WithHTTPMiddleware(middleware httpserver.Middleware) Option {
+	return func(settings *options) error {
+		if middleware == nil {
+			return errors.New("HTTP middleware is required")
+		}
+		settings.httpMiddlewares = append(settings.httpMiddlewares, middleware)
 		return nil
 	}
 }

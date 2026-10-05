@@ -93,6 +93,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		} `json:"global_options"`
 		Commands []struct {
 			Name        string   `json:"name"`
+			Usage       string   `json:"usage"`
 			SideEffects []string `json:"side_effects"`
 			Examples    []string `json:"examples"`
 			Environment struct {
@@ -116,6 +117,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	}
 	rollbackDeclaredDestructive := false
 	generateDeclaresDryRun := false
+	generateDeclaresJob := false
 	commandsSeen := make(map[string]bool, len(catalog.Commands))
 	processExitCodesSeen := make(map[int]bool, len(catalog.ProcessExitCodes))
 	expectedCommands := map[string]bool{
@@ -127,6 +129,9 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 			t.Errorf("command is missing complete machine-readable metadata: %+v", command)
 		}
 		commandsSeen[command.Name] = true
+		if command.Name == "generate" {
+			generateDeclaresJob = strings.Contains(command.Usage, "|job>") && containsString(command.Examples, "forge generate job cleanup --dry-run")
+		}
 		commandExitCodesSeen := make(map[int]bool, len(command.ExitCodes))
 		for _, exitCode := range command.ExitCodes {
 			commandExitCodesSeen[exitCode.Code] = true
@@ -151,8 +156,8 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 			}
 		}
 	}
-	if !rollbackDeclaredDestructive || !generateDeclaresDryRun {
-		t.Fatal("catalog does not describe rollback's destructive effects and generate's read-only dry-run")
+	if !rollbackDeclaredDestructive || !generateDeclaresDryRun || !generateDeclaresJob {
+		t.Fatalf("catalog rollback=%v generate dry-run=%v generate job=%v", rollbackDeclaredDestructive, generateDeclaresDryRun, generateDeclaresJob)
 	}
 	hasUsageExitCode := false
 	for _, exitCode := range catalog.ProcessExitCodes {
@@ -352,6 +357,10 @@ func TestGeneratedApplication(t *testing.T) {
 		}
 		if _, err := generateView(dir, "welcome"); err != nil {
 			t.Fatalf("generate an embedded view: %v", err)
+		}
+		var jobOutput bytes.Buffer
+		if err := runGenerateAt([]string{"job", "cleanup"}, &jobOutput, dir); err != nil {
+			t.Fatalf("generate a job: %v", err)
 		}
 		for _, args := range [][]string{{"vet", "./..."}, {"test", "./..."}, {"build", "-o", os.DevNull, "./cmd/" + name}} {
 			command := exec.Command("go", args...)

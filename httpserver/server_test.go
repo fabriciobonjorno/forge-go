@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -67,5 +68,83 @@ func TestRequestContextCarriesRequestID(t *testing.T) {
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 	if seen == "" || seen != recorder.Header().Get("X-Request-ID") {
 		t.Fatalf("context request ID %q does not match header %q", seen, recorder.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestNewWithMiddlewarePreservesFrameworkContextAndOrder(t *testing.T) {
+	t.Parallel()
+	calls := []string{}
+	middleware := func(name string) httpserver.Middleware {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if web.RequestID(r.Context()) == "" {
+					t.Error("request ID was not set before custom middleware")
+				}
+				calls = append(calls, name+" before")
+				next.ServeHTTP(w, r)
+				calls = append(calls, name+" after")
+			})
+		}
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls = append(calls, "handler")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server, err := httpserver.NewWithMiddleware(
+		config.Default(),
+		handler,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		middleware("first"),
+		middleware("second"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	want := []string{"first before", "second before", "handler", "second after", "first after"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("middleware calls=%v want=%v", calls, want)
+	}
+}
+
+func TestNewWithMiddlewareRejectsInvalidMiddleware(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	if _, err := httpserver.NewWithMiddleware(config.Default(), handler, logger, nil); err == nil {
+		t.Fatal("nil middleware was accepted")
+	}
+	nilHandlerMiddleware := httpserver.Middleware(func(http.Handler) http.Handler { return nil })
+	if _, err := httpserver.NewWithMiddleware(config.Default(), handler, logger, nilHandlerMiddleware); err == nil {
+		t.Fatal("middleware returning nil handler was accepted")
+	}
+}
+
+func TestNewWithMiddlewarePanicUsesFrameworkRecovery(t *testing.T) {
+	t.Parallel()
+	middleware := httpserver.Middleware(func(http.Handler) http.Handler {
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("middleware failure")
+		})
+	})
+	server, err := httpserver.NewWithMiddleware(
+		config.Default(),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		middleware,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want=%d", recorder.Code, http.StatusInternalServerError)
+	}
+	if recorder.Header().Get("X-Request-ID") == "" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("framework headers were not preserved after middleware panic")
+	}
+	if strings.Contains(recorder.Body.String(), "middleware failure") {
+		t.Fatal("middleware panic leaked to client")
 	}
 }

@@ -278,6 +278,8 @@ commands:
                       create or preview db/migrations/<timestamp>_NAME.{up,down}.sql
   generate view NAME [--dry-run]
                       create or preview an embedded, auto-escaped HTML template
+  generate job NAME [--dry-run]
+                      create or preview a cancellation-aware job stub and tests
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   help --json         print the versioned machine-readable command catalog

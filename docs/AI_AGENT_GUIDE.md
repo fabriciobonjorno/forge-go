@@ -28,6 +28,7 @@ Generators that support `--dry-run` show planned paths without writing files:
 ```sh
 forge generate migration create_orders --dry-run
 forge generate view orders --dry-run
+forge generate job cleanup --dry-run
 ```
 
 Review the proposed paths and content with the user before invoking a
