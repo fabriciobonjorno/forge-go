@@ -112,7 +112,8 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewMFACompletionHandler(service)
+	auditor := &securityAuditorStub{}
+	handler, err := NewAuditedMFACompletionHandler(service, auditor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +139,9 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 	}
 	if response.AccessToken != sessionToken.Reveal() || !response.ExpiresAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("response=%+v", response)
+	}
+	if len(auditor.events) != 1 || auditor.events[0].Kind != SecurityMFAChallengeSucceeded || auditor.events[0].Outcome != SecurityOutcomeSucceeded {
+		t.Fatalf("audit events=%+v", auditor.events)
 	}
 }
 
