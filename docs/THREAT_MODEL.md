@@ -149,7 +149,7 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Threat | STRIDE | Mitigation |
 | ------ | ------ | ---------- |
 | `forge new` overwrites existing work | T | Refuses to write into a non-empty directory. A directory created by `forge new` is removed again if generation fails. |
-| `forge generate migration` overwrites a migration | T | Files are created with `O_EXCL`; the version is moved forward past existing versions; the name must match `^[a-z][a-z0-9_]{0,99}$`. |
+| `forge generate` overwrites application files | T | Migration and view files are created with `O_EXCL`; generated names are allow-listed and existing files are refused. |
 | Malicious or malformed application name | T | Name must match `^[a-z][a-z0-9-]{0,62}$`; module path is validated and may not contain `..`. Templates fail on missing keys. |
 | Shell injection through arguments | E | Subprocesses (`go get`, `go mod edit`, `go mod tidy`, `go mod vendor`, `go build`, `go test`, and the application binary run by `forge dev`, `forge migrate`, and `forge rollback`) are executed directly via `os/exec`, never through a shell. |
 | Wrong code vendored via `--framework-path` | T | The path's `go.mod` must declare `github.com/fabriciobonjorno/forge-go`. |
@@ -173,13 +173,15 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Secrets accidentally persisted in audit records | I | `auth.SecurityEvent` has a closed field set with identifiers and SHA-256 digests only; there is no arbitrary metadata/payload map for passwords, bearer tokens, reset links, TOTP seeds, challenges, or backup codes. |
 | Audit history lost when identities are deleted | R | PostgreSQL audit actor/subject/membership identifiers intentionally have no foreign keys, so history survives identity cleanup. |
 | Audit records tampered with by a database owner | T, R | Not prevented cryptographically. Forge exposes append-only application APIs, but a database owner can still alter/delete rows; external immutable shipping/signing remains a hardening concern. |
+| Agent action identity spoofing or tenant mismatch | S, E | `agent.Engine` accepts no caller-supplied principal; it requires the authenticated principal and matching tenant established in context by auth middleware. PostgreSQL journal completion is scoped to execution, tenant, actor, and reserved status. |
+| Agent action partial side effect hidden as a definitive failure | T, R | Executor errors and post-execution audit/output uncertainty are persisted as `unresolved` where possible, indexed for reconciliation, and returned with `MayHaveExecuted`; tenant-scoped operator decisions are stored separately, once per execution, without rewriting the original row or retrying the action. |
 
 ## Future components (Planned)
 
 | Area | Planned mitigation |
 | ---- | ------------------ |
 | Identity completion (Phase 3) | MFA, generated application wiring, remaining identity-flow audit instrumentation, and a decided tenancy-enforcement strategy for MySQL, MariaDB, and SQLite. |
-| AI execution (Phase 7) | Mandatory `Intent -> Policy -> Validation -> Authorization -> Execution -> Audit` pipeline; no step skippable; execution limited to the authorizing principal's privileges; every execution audited. |
+| AI execution (Phase 7) | Provider integrations and generated actions; auditable policy/version and permission evidence; first-party journal adapters for MySQL, MariaDB, and SQLite. Policy and approval callbacks remain application trust points and cannot be proven human/restrictive by the engine. |
 
 ## Residual risks
 

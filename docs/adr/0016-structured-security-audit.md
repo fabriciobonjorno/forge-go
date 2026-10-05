@@ -47,6 +47,12 @@ streams are later hardening concerns.
   when an auditor is configured. The generated PostgreSQL login, MFA, and
   bearer logout flows wire the repository as auditor; framework cookie logout
   can also be composed with an auditor.
+- Authentication middleware can optionally record syntactically valid
+  rejected sessions by credential digest, and `RequireAudited` records the
+  authenticated actor for permission denials. Missing/malformed credentials
+  and resolver infrastructure errors are not persisted; rejected-session
+  auditing can generate database writes and should be enabled with request
+  limiting and retention/capacity planning.
 - `SecurityAuditError.OperationApplied` distinguishes an audit append failure
   after an irreversible state transition from one that prevented a security
   operation from completing. HTTP adapters log the former while preserving the

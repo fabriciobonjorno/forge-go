@@ -1,7 +1,7 @@
 # Architecture
 
-This document describes the Forge framework as it exists today (Phases 1 and
-2) and the layout it prescribes for generated applications. Planned work is
+This document describes the Forge framework foundations and the layout it
+prescribes for generated applications. Planned work is
 labelled as such; see [ROADMAP.md](ROADMAP.md).
 
 ## Principles
@@ -30,12 +30,14 @@ labelled as such; see [ROADMAP.md](ROADMAP.md).
 Core (standard library only)
 forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown hooks, health routes
 ├── auth         Opaque sessions, principal context, bearer middleware, authorization
+├── agent        Provider-neutral allowlisted action policy and execution pipeline
 ├── tenancy      Fail-closed tenant context
 ├── config       Config struct, defaults, environment loading, validation, Secret
 ├── router       Route registry on http.ServeMux
 ├── httpserver   http.Server, middleware chain, run/shutdown lifecycle
 ├── web          JSON responses, error format, strict decoding, request context values
 ├── pagination   UUIDv7 keyset pagination and cursors
+├── events       Versioned application-event envelope with bounded JSON payloads
 ├── health       Readiness check registry
 ├── uuid         UUIDv7 type and generator
 ├── fault        Typed application errors
@@ -45,6 +47,8 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 
 Adapters (may use third-party modules)
 postgres               PostgreSQL: pgx v5 pool, transactions, translation, advisory locks, migration dialect
+outbox/postgres        Transactional outbox persistence, leases, and dispatcher
+agent/postgres         Tenant-RLS-protected execution journal for registered agent actions
 postgres/postgrestest  Per-test PostgreSQL databases
 mysql                  MySQL and MariaDB: go-sql-driver/mysql pool, translation, migration dialect
 mysql/mysqltest        Per-test MySQL/MariaDB databases
@@ -67,12 +71,14 @@ Dependency direction (imports within the module):
 | `httpserver`            | `config`, `fault`, `uuid`, `web` |
 | `router`                | `fault`, `web` |
 | `pagination`            | `fault`, `uuid` |
+| `events`                | `uuid` |
 | `web`                   | `fault` |
 | `sqldb`                 | `config`, `fault` |
 | `migrate`               | `forge`, `config` |
 | `dbtest`                | `config`, `migrate`, `uuid` |
 | `config`, `fault`, `health`, `uuid` | standard library only |
 | `postgres`              | `forge`, `config`, `migrate`, `sqldb`, `tenancy`, pgx v5 |
+| `outbox/postgres`       | `events`, `postgres` |
 | `mysql`                 | `forge`, `config`, `migrate`, `sqldb`, go-sql-driver/mysql |
 | `sqlite`                | `forge`, `config`, `migrate`, `sqldb`, modernc.org/sqlite |
 | `postgrestest`, `mysqltest`, `sqlitetest` | their adapter, `config`, `dbtest`, `migrate` (and `sqldb` or pgx) |
@@ -419,11 +425,16 @@ the database pool directly in `app/bootstrap`.
 | [0008](adr/0008-sql-migrations-embedded-in-the-binary.md) | SQL migrations embedded in the application binary (amended by 0009) |
 | [0009](adr/0009-multiple-databases.md) | Multiple databases: PostgreSQL, MySQL, MariaDB and SQLite |
 | [0010](adr/0010-opaque-sessions-and-fail-closed-tenancy.md) | Opaque sessions and fail-closed tenancy |
+| [0011](adr/0011-login-throttling.md) | Login throttling by account and source |
+| [0012](adr/0012-cookie-sessions-and-csrf.md) | Explicit secure-cookie sessions with double-submit CSRF |
+| [0017](adr/0017-tenancy-enforcement-mysql-sqlite.md) | Tenancy enforcement for MySQL and SQLite |
+| [0018](adr/0018-transactional-outbox-foundation.md) | Transactional outbox foundation |
+| [0019](adr/0019-outbox-dispatch.md) | PostgreSQL outbox dispatch |
+| [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
 
 ## Not yet implemented
 
-A concrete identity/session repository, password and browser authentication,
-generated identity schemas, background jobs, events/outbox, OpenTelemetry,
-OpenAPI generation, the AI execution subsystem, and resource generators
-(`forge generate` currently creates migrations only). See
+OpenTelemetry, OpenAPI generation, the AI execution subsystem, and domain
+resource generators (`forge generate` supports SQL migrations and embedded
+HTML views). See
 [ROADMAP.md](ROADMAP.md).

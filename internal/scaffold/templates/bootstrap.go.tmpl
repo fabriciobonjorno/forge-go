@@ -4,12 +4,19 @@ package bootstrap
 
 import (
 	"context"
+	{{- if and .DB .DB.Identity}}
+	"errors"
+	"log/slog"
+	{{- end}}
 	"net/http"
 
 	forge "github.com/fabriciobonjorno/forge-go"
 {{- if and .DB .DB.Identity}}
 	"github.com/fabriciobonjorno/forge-go/auth"
 	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
+{{- end}}
+{{- if and .DB .DB.Jobs}}
+	"github.com/fabriciobonjorno/forge-go/jobs"
 {{- end}}
 {{- if .DB}}
 	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
@@ -32,10 +39,10 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := app.Readiness("database", database.Ping); err != nil {
 		return err
 	}
-	if err := routes(app); err != nil {
+	if err := routes(ctx, app); err != nil {
 		return err
 	}
-{{- if .DB.Identity}}
+{{- if and .DB .DB.Identity}}
 	return identityRoutes(app, database)
 {{- else}}
 	return nil
@@ -43,17 +50,52 @@ func Configure(ctx context.Context, app *forge.App) error {
 }
 {{- else}}
 func Configure(_ context.Context, app *forge.App) error {
-	return routes(app)
+	return routes(context.Background(), app)
 }
 {{- end}}
 
-func routes(app *forge.App) error {
-	return app.HandleFunc("GET /v1/status", status)
+{{- if and .DB .DB.Jobs}}
+func JobsConfigure(app *forge.App) error {
+	scheduler := jobs.NewScheduler(jobs.SchedulerOptions{
+		MaxConcurrentJobs: 4,
+		OnError: func(name string, err error) {
+			app.Logger().Error("scheduled job failed", "job", name, "error", err)
+		},
+	})
+	// Register application jobs here, e.g.:
+	// scheduler.Register("cleanup", jobs.ScheduleSpec{Every: 24 * time.Hour}, func(ctx context.Context) error {
+	//     return app.InTx(ctx, func(tx pgx.Tx) error {
+	//         // cleanup work
+	//         return nil
+	//     })
+	// })
+	if err := app.OnShutdown(func(ctx context.Context) error { return scheduler.Stop() }); err != nil {
+		_ = scheduler.Stop()
+		return err
+	}
+	scheduler.Start()
+	return nil
+}
+{{- end}}
+
+func routes(ctx context.Context, app *forge.App) error {
+	// Public routes
+	if err := app.HandleFunc("GET /{$}", welcome); err != nil {
+		return err
+	}
+	if err := app.Handle("GET /assets/", brandAssetsHandler()); err != nil {
+		return err
+	}
+	if err := app.HandleFunc("GET /v1/status", status); err != nil {
+		return err
+	}
+	return nil
 }
 
 func status(w http.ResponseWriter, _ *http.Request) {
 	web.JSON(w, http.StatusOK, map[string]string{"service": "{{.Name}}", "status": "ok"})
 }
+
 {{- if and .DB .DB.Identity}}
 
 func identityRoutes(app *forge.App, database *postgres.DB) error {
@@ -70,6 +112,7 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 		auth.WithSecurityAuditor(repository),
 	}
 	var mfaCompletion http.Handler
+	var mfaService *auth.MFAService
 	if !app.Config().Auth.MFAKey.IsZero() {
 		cipher, err := auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())
 		if err != nil {
@@ -89,6 +132,7 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 		if err != nil {
 			return err
 		}
+		mfaService = mfa
 		loginOptions = append(loginOptions, auth.WithMFAChallengeIssuer(mfa))
 		mfaCompletion, err = auth.NewMFACompletionHandler(mfa)
 		if err != nil {
@@ -122,7 +166,68 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 			return err
 		}
 	}
+
+	// Password recovery routes (public, non-enumerating)
+	recoveryService, err := auth.NewRecoveryService(repository, recoveryDeliveryNotConfigured{logger: app.Logger()}, auth.WithRecoveryThrottler(throttler), auth.WithRecoveryAuditor(repository))
+	if err != nil {
+		return err
+	}
+	recoveryRequestHandler, err := auth.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
+	if err != nil {
+		return err
+	}
+	recoveryResetHandler, err := auth.NewAuditedPasswordResetHandler(recoveryService, repository)
+	if err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/recovery/request", recoveryRequestHandler); err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/recovery/reset", recoveryResetHandler); err != nil {
+		return err
+	}
+
+	// Cookie-based authentication routes (browser applications)
+	cookieLoginHandler, err := auth.NewCookieLoginHandler(login)
+	if err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/cookie/login", cookieLoginHandler); err != nil {
+		return err
+	}
+	if mfaService != nil {
+		cookieMFACompletionHandler, err := auth.NewCookieMFACompletionHandler(mfaService)
+		if err != nil {
+			return err
+		}
+		if err := app.Handle("POST /auth/cookie/mfa/complete", cookieMFACompletionHandler); err != nil {
+			return err
+		}
+	}
+	cookieLogoutHandler, err := auth.NewAuditedCookieLogoutHandler(repository, repository)
+	if err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/cookie/logout", cookieLogoutHandler); err != nil {
+		return err
+	}
+
+	// MFA enrollment/management routes (require authenticated principal + step-up authorizer)
+	// These are intentionally left for application-specific step-up policy.
+	// Applications can wire them in app/bootstrap/bootstrap.go after generation.
+
 	return app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))
+}
+
+// recoveryDeliveryNotConfigured fails closed until the application installs a
+// delivery adapter. It never logs recipient addresses, tokens, or reset URLs.
+type recoveryDeliveryNotConfigured struct{ logger *slog.Logger }
+
+func (s recoveryDeliveryNotConfigured) SendPasswordRecovery(ctx context.Context, _ auth.PasswordRecoveryMessage) error {
+	if s.logger != nil {
+		s.logger.ErrorContext(ctx, "password recovery delivery is not configured")
+	}
+	return errors.New("password recovery delivery is not configured")
 }
 
 type sessionResponse struct {

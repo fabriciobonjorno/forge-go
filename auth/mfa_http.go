@@ -271,3 +271,406 @@ func NewMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer) (
 		w.WriteHeader(http.StatusNoContent)
 	}), nil
 }
+
+// NewAuditedTOTPEnrollmentHandler is NewTOTPEnrollmentHandler with structured security audit.
+func NewAuditedTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFAEnrollmentAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newTOTPEnrollmentHandler(service, issuer, authorizer, auditor)
+}
+
+func newTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFAEnrollmentAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if service == nil || authorizer == nil {
+		return nil, errors.New("MFA service and enrollment authorizer are required")
+	}
+	issuer = strings.TrimSpace(issuer)
+	if !validTOTPLabel(issuer, 128) {
+		return nil, errors.New("TOTP issuer is required and must not contain control characters")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
+		principal, ok := FromContext(r.Context())
+		if !ok {
+			web.Error(w, r, ErrCredentialsRequired)
+			return
+		}
+		if err := authorizer.AuthorizeMFAEnrollment(r.Context(), principal); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		enrollment, err := service.BeginTOTPEnrollment(
+			r.Context(),
+			principal.SubjectID(),
+			issuer,
+			principal.SubjectID().String(),
+		)
+		if err != nil {
+			if auditor != nil {
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+					Kind:      SecurityMFAEnrollmentStarted,
+					Outcome:   SecurityOutcomeFailed,
+					ActorID:   principal.SubjectID(),
+					SubjectID: principal.SubjectID(),
+				}); auditErr != nil {
+					web.Logger(r.Context()).Error("security audit failed",
+						"method", r.Method,
+						"path", r.URL.Path,
+						"error", auditErr,
+					)
+				}
+			}
+			web.Error(w, r, err)
+			return
+		}
+		if auditor != nil {
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+				Kind:      SecurityMFAEnrollmentStarted,
+				Outcome:   SecurityOutcomeSucceeded,
+				ActorID:   principal.SubjectID(),
+				SubjectID: principal.SubjectID(),
+			}); auditErr != nil {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", auditErr,
+				)
+			}
+		}
+		web.JSON(w, http.StatusOK, totpEnrollmentResponse{
+			Secret:          enrollment.Secret.Reveal(),
+			ProvisioningURI: enrollment.ProvisioningURI.Reveal(),
+			ExpiresAt:       enrollment.ExpiresAt,
+		})
+	}), nil
+}
+
+// NewAuditedTOTPConfirmationHandler is NewTOTPConfirmationHandler with structured security audit.
+func NewAuditedTOTPConfirmationHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newTOTPConfirmationHandler(service, auditor)
+}
+
+func newTOTPConfirmationHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+	if service == nil {
+		return nil, errors.New("MFA service is required")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
+		principal, ok := FromContext(r.Context())
+		if !ok {
+			web.Error(w, r, ErrCredentialsRequired)
+			return
+		}
+		var request totpConfirmationRequest
+		if err := web.DecodeJSON(r, &request); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		confirmation, err := service.ConfirmTOTPEnrollment(r.Context(), principal.SubjectID(), request.Code)
+		if err != nil {
+			if auditor != nil {
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+					Kind:      SecurityMFAEnabled,
+					Outcome:   SecurityOutcomeFailed,
+					ActorID:   principal.SubjectID(),
+					SubjectID: principal.SubjectID(),
+				}); auditErr != nil {
+					web.Logger(r.Context()).Error("security audit failed",
+						"method", r.Method,
+						"path", r.URL.Path,
+						"error", auditErr,
+					)
+				}
+			}
+			web.Error(w, r, err)
+			return
+		}
+		if auditor != nil {
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+				Kind:      SecurityMFAEnabled,
+				Outcome:   SecurityOutcomeSucceeded,
+				ActorID:   principal.SubjectID(),
+				SubjectID: principal.SubjectID(),
+			}); auditErr != nil {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", auditErr,
+				)
+			}
+		}
+		backupCodes := make([]string, len(confirmation.BackupCodes))
+		for index, backupCode := range confirmation.BackupCodes {
+			backupCodes[index] = backupCode.Reveal()
+		}
+		web.JSON(w, http.StatusOK, totpConfirmationResponse{BackupCodes: backupCodes})
+	}), nil
+}
+
+// NewAuditedMFACompletionHandler is NewMFACompletionHandler with structured security audit.
+func NewAuditedMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newMFACompletionHandler(service, auditor)
+}
+
+func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+	if service == nil {
+		return nil, errors.New("MFA service is required")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
+		var request mfaCompletionRequest
+		if err := web.DecodeJSON(r, &request); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		result, err := service.CompleteLogin(r.Context(), MFACompletion{
+			ChallengeToken: request.ChallengeToken,
+			Code:           request.Code,
+			Source:         requestSource(r),
+		})
+		if err != nil {
+			var throttled *LoginThrottledError
+			if errors.As(err, &throttled) {
+				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
+			}
+			if auditor != nil {
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+					Kind:    SecurityMFAChallengeFailed,
+					Outcome: SecurityOutcomeFailed,
+				}); auditErr != nil {
+					web.Logger(r.Context()).Error("security audit failed",
+						"method", r.Method,
+						"path", r.URL.Path,
+						"error", auditErr,
+					)
+				}
+			}
+			web.Error(w, r, err)
+			return
+		}
+		if auditor != nil {
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+				Kind:    SecurityMFAChallengeSucceeded,
+				Outcome: SecurityOutcomeSucceeded,
+			}); auditErr != nil {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", auditErr,
+				)
+			}
+		}
+		web.JSON(w, http.StatusOK, loginResponse{
+			AccessToken: result.Token.Reveal(),
+			TokenType:   "Bearer",
+			ExpiresAt:   result.ExpiresAt,
+		})
+	}), nil
+}
+
+// NewAuditedTOTPRotationHandler is NewTOTPRotationHandler with structured security audit.
+func NewAuditedTOTPRotationHandler(service *MFAService, issuer string, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newTOTPRotationHandler(service, issuer, authorizer, auditor)
+}
+
+func newTOTPRotationHandler(service *MFAService, issuer string, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if service == nil || authorizer == nil {
+		return nil, errors.New("MFA service and change authorizer are required")
+	}
+	issuer = strings.TrimSpace(issuer)
+	if !validTOTPLabel(issuer, 128) {
+		return nil, errors.New("TOTP issuer is required and must not contain control characters")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
+		principal, ok := FromContext(r.Context())
+		if !ok {
+			web.Error(w, r, ErrCredentialsRequired)
+			return
+		}
+		if err := authorizer.AuthorizeMFAChange(r.Context(), principal); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		enrollment, err := service.BeginTOTPRotation(
+			r.Context(),
+			principal.SubjectID(),
+			issuer,
+			principal.SubjectID().String(),
+		)
+		if err != nil {
+			if auditor != nil {
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+					Kind:      SecurityMFARotationStarted,
+					Outcome:   SecurityOutcomeFailed,
+					ActorID:   principal.SubjectID(),
+					SubjectID: principal.SubjectID(),
+				}); auditErr != nil {
+					web.Logger(r.Context()).Error("security audit failed",
+						"method", r.Method,
+						"path", r.URL.Path,
+						"error", auditErr,
+					)
+				}
+			}
+			web.Error(w, r, err)
+			return
+		}
+		if auditor != nil {
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+				Kind:      SecurityMFARotationStarted,
+				Outcome:   SecurityOutcomeSucceeded,
+				ActorID:   principal.SubjectID(),
+				SubjectID: principal.SubjectID(),
+			}); auditErr != nil {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", auditErr,
+				)
+			}
+		}
+		web.JSON(w, http.StatusOK, totpEnrollmentResponse{
+			Secret:          enrollment.Secret.Reveal(),
+			ProvisioningURI: enrollment.ProvisioningURI.Reveal(),
+			ExpiresAt:       enrollment.ExpiresAt,
+		})
+	}), nil
+}
+
+// NewAuditedTOTPRotationConfirmationHandler is NewTOTPRotationConfirmationHandler with structured security audit.
+func NewAuditedTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newTOTPRotationConfirmationHandler(service, authorizer, auditor)
+}
+
+func newTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if service == nil || authorizer == nil {
+		return nil, errors.New("MFA service and change authorizer are required")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
+		principal, ok := FromContext(r.Context())
+		if !ok {
+			web.Error(w, r, ErrCredentialsRequired)
+			return
+		}
+		if err := authorizer.AuthorizeMFAChange(r.Context(), principal); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		var request totpConfirmationRequest
+		if err := web.DecodeJSON(r, &request); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		confirmation, err := service.ConfirmTOTPRotation(r.Context(), principal.SubjectID(), request.Code)
+		if err != nil {
+			if auditor != nil {
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+					Kind:      SecurityMFARotated,
+					Outcome:   SecurityOutcomeFailed,
+					ActorID:   principal.SubjectID(),
+					SubjectID: principal.SubjectID(),
+				}); auditErr != nil {
+					web.Logger(r.Context()).Error("security audit failed",
+						"method", r.Method,
+						"path", r.URL.Path,
+						"error", auditErr,
+					)
+				}
+			}
+			web.Error(w, r, err)
+			return
+		}
+		if auditor != nil {
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+				Kind:      SecurityMFARotated,
+				Outcome:   SecurityOutcomeSucceeded,
+				ActorID:   principal.SubjectID(),
+				SubjectID: principal.SubjectID(),
+			}); auditErr != nil {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", auditErr,
+				)
+			}
+		}
+		backupCodes := make([]string, len(confirmation.BackupCodes))
+		for index, backupCode := range confirmation.BackupCodes {
+			backupCodes[index] = backupCode.Reveal()
+		}
+		web.JSON(w, http.StatusOK, totpConfirmationResponse{BackupCodes: backupCodes})
+	}), nil
+}
+
+// NewAuditedMFADisableHandler is NewMFADisableHandler with structured security audit.
+func NewAuditedMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("security auditor is required")
+	}
+	return newMFADisableHandler(service, authorizer, auditor)
+}
+
+func newMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+	if service == nil || authorizer == nil {
+		return nil, errors.New("MFA service and change authorizer are required")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
+		principal, ok := FromContext(r.Context())
+		if !ok {
+			web.Error(w, r, ErrCredentialsRequired)
+			return
+		}
+		if err := authorizer.AuthorizeMFAChange(r.Context(), principal); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		if err := service.DisableMFA(r.Context(), principal.SubjectID()); err != nil {
+			if auditor != nil {
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+					Kind:      SecurityMFADisabled,
+					Outcome:   SecurityOutcomeFailed,
+					ActorID:   principal.SubjectID(),
+					SubjectID: principal.SubjectID(),
+				}); auditErr != nil {
+					web.Logger(r.Context()).Error("security audit failed",
+						"method", r.Method,
+						"path", r.URL.Path,
+						"error", auditErr,
+					)
+				}
+			}
+			web.Error(w, r, err)
+			return
+		}
+		if auditor != nil {
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+				Kind:      SecurityMFADisabled,
+				Outcome:   SecurityOutcomeSucceeded,
+				ActorID:   principal.SubjectID(),
+				SubjectID: principal.SubjectID(),
+			}); auditErr != nil {
+				web.Logger(r.Context()).Error("security audit failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"error", auditErr,
+				)
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}), nil
+}

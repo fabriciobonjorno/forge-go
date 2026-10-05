@@ -11,13 +11,27 @@ Pre-release. Phases 1 (core runtime, configuration, CLI, lifecycle, HTTP) and
 2 (databases, migrations, transactions, repositories) are implemented,
 including support for several databases. Phase 3 provides an identity and
 tenancy foundation with PostgreSQL persistence, password and browser-session
-flows, recovery and MFA primitives, and security auditing. Its remaining
-scope and adapter boundaries are listed in the roadmap. APIs may change
+flows, recovery and MFA primitives, and security auditing. Phase 4 adds
+background jobs, a transactional outbox with bounded concurrent dispatch,
+dead-letter replay, and an in-process scheduler. Its remaining scope and
+adapter boundaries are listed in the roadmap. APIs may change
 without notice until a tagged release.
 
-Still planned: background jobs, OpenTelemetry, OpenAPI, resource code
-generation, performance work, and security hardening. See
-[docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
+Phase 7 now includes a provider-neutral `agent` action engine and a
+PostgreSQL-backed execution journal. It does not call an LLM: applications
+register actions and supply policy, approval, and identity integrations. The
+engine takes identity only from authenticated middleware, checks tenant
+consistency, and durably marks uncertain post-execution outcomes for
+reconciliation. Policy and approval callbacks remain application trust points.
+Destructive/external actions require an approval adapter; the CLI itself is
+not an agent authorization boundary. See the [AI agent guide](docs/AI_AGENT_GUIDE.md).
+
+The PostgreSQL transactional outbox supports bounded concurrent delivery,
+leases, acknowledgements, bounded retries, dead-letter replay, and queue
+metrics. An in-process job scheduler (`jobs.Scheduler`) runs recurring work
+with configurable concurrency. OpenTelemetry, OpenAPI, resource code
+generation, performance work, and further security hardening remain
+planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 
 ## Packages
 
@@ -30,12 +44,16 @@ Core packages import only the standard library and each other; a test
 | ------------ | ------- |
 | `forge`      | `forge.Main` entrypoint, `App` composition, shutdown hooks, binary subcommands, health routes |
 | `auth`       | Opaque bearer-session tokens, current-session resolver middleware, principals and deny-by-default permissions |
+| `agent`      | Provider-neutral allowlisted action pipeline with policy, validation, principal permissions, explicit approval and mandatory journaling |
 | `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
 | `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405` |
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown |
 | `web`        | JSON responses, the single error format, strict JSON decoding, request ID and request-scoped logger |
+| `views`      | Concurrent-safe server-rendered HTML templates with contextual escaping and buffered rendering |
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
+| `events`     | Versioned event envelope with bounded JSON payloads |
+| `jobs`       | In-process scheduler with bounded concurrency, fixed-rate, daily, and numeric 5-field cron schedules |
 | `health`     | Readiness check registry; `/health`, `/health/live`, `/health/ready` |
 | `uuid`       | RFC 9562 UUIDv7 (default identifier), monotonic generator, JSON/text/SQL support |
 | `fault`      | Typed application errors (code, message, category, cause, metadata, retryable, HTTP status) |
@@ -48,6 +66,8 @@ Adapter packages (third-party dependencies allowed):
 | Package                 | Purpose |
 | ----------------------- | ------- |
 | `postgres`              | PostgreSQL on pgx v5: pool, `DBTX`, transactions with retry, error translation, advisory locks, migrations |
+| `outbox/postgres`       | PostgreSQL transactional outbox persistence and concurrent dispatcher |
+| `agent/postgres`        | Tenant-RLS-protected PostgreSQL journal with replay refusal, bounded reconciliation listing, and one-time operator decisions |
 | `mysql`                 | MySQL and MariaDB on go-sql-driver/mysql: hardened session, error translation, migrations |
 | `sqlite`                | SQLite on the pure-Go modernc.org/sqlite: enforced pragmas, error translation, migrations with a file lock |
 | `postgres/postgrestest`, `mysql/mysqltest`, `sqlite/sqlitetest` | A fresh database per test |
@@ -97,10 +117,25 @@ directly.
 Adding a table:
 
 ```sh
+forge generate migration create_notes --dry-run # preview exact migration files first
 forge generate migration create_notes   # edit db/migrations/<timestamp>_create_notes.{up,down}.sql
 forge migrate
 forge test
 ```
+
+Generate a server-rendered HTML view (templates use Go's contextual HTML
+escaping and are embedded into the application binary):
+
+```sh
+forge generate view welcome --dry-run   # preview files without writing
+forge generate view welcome
+```
+
+The generator creates `app/views/welcome.gohtml` and, on the first view,
+`app/views/renderer.go`. Build one renderer during application composition
+with `views.NewRenderer()`, then call `renderer.Render(w, "welcome.gohtml",
+http.StatusOK, data)` from an HTTP handler. Execution errors happen before
+response headers or body bytes are written.
 
 `forge new myapp` generates:
 
@@ -144,8 +179,11 @@ configured for production behind a TLS-terminating proxy. See
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command |
 | `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
-| `forge generate migration NAME` | Create `db/migrations/<UTC timestamp>_NAME.up.sql` and `.down.sql` |
-| `forge doctor` | Load and validate configuration; shows the database URL without password or query parameters (except `sslmode`) |
+| `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
+| `forge generate view NAME [--dry-run]` | Create or preview an embedded server-rendered Go HTML template with contextual escaping |
+| `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
+| `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
+| `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
 | `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
 | `forge version` | Print CLI version, commit, and build date |
 
@@ -206,6 +244,12 @@ Binaries built with `forge.Main` accept:
 Exit status is `0` on success, `1` on failure (including invalid
 configuration), and `2` for an unknown command or invalid arguments.
 
+For agent and script integrations, prefix any Forge CLI command with
+`--error-format=json` to emit a versioned, secret-safe error object on stderr
+when the command fails. Error messages intentionally omit underlying error
+details and input values; `doctor --json` and `inspect --json` keep their
+command-specific diagnostic reports on stdout.
+
 ## Example
 
 [`examples/basic-api`](examples/basic-api) is the reference service: a task
@@ -259,6 +303,7 @@ CI (`.github/workflows/ci.yml`):
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Authentication and authorization](docs/AUTHENTICATION.md)
+- [AI agent guide and current authorization boundaries](docs/AI_AGENT_GUIDE.md)
 - [Database](docs/DATABASE.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Roadmap](docs/ROADMAP.md)

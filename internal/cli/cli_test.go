@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +29,209 @@ func TestRunVersion(t *testing.T) {
 	if !strings.HasPrefix(stdout.String(), "forge ") {
 		t.Fatalf("stdout=%q", stdout.String())
 	}
+}
+
+func TestRunJSONErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		args     []string
+		code     int
+		wantCode string
+		wantExit int
+		command  string
+		wantJSON string
+	}{
+		{name: "missing command", args: []string{"--error-format=json"}, code: 2, wantCode: "command.required", wantExit: 2, wantJSON: `{"schema_version":1,"error":{"code":"command.required","message":"A command is required.","exit_code":2}}` + "\n"},
+		{name: "unknown command", args: []string{"--error-format=json", "private-secret"}, code: 2, wantCode: "command.unknown", wantExit: 2, wantJSON: `{"schema_version":1,"error":{"code":"command.unknown","message":"Unknown command.","exit_code":2}}` + "\n"},
+		{name: "failed command", args: []string{"--error-format=json", "version", "private-secret"}, code: 1, wantCode: "command.failed", wantExit: 1, command: "version", wantJSON: `{"schema_version":1,"error":{"code":"command.failed","message":"Command failed.","exit_code":1,"command":"version"}}` + "\n"},
+		{name: "invalid flag", args: []string{"--error-format=json", "uuid", "--private-secret"}, code: 1, wantCode: "command.failed", wantExit: 1, command: "uuid", wantJSON: `{"schema_version":1,"error":{"code":"command.failed","message":"Command failed.","exit_code":1,"command":"uuid"}}` + "\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if got := Run(tt.args, &stdout, &stderr); got != tt.code {
+				t.Fatalf("Run() = %d, want %d", got, tt.code)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("unexpected stdout: %q", stdout.String())
+			}
+			if strings.Contains(stderr.String(), "private-secret") {
+				t.Fatalf("JSON error leaked argument data: %s", stderr.String())
+			}
+			if got := stderr.String(); got != tt.wantJSON {
+				t.Fatalf("JSON error changed:\n got: %s\nwant: %s", got, tt.wantJSON)
+			}
+			var report cliErrorReport
+			if err := json.Unmarshal(stderr.Bytes(), &report); err != nil {
+				t.Fatalf("decode JSON error: %v: %s", err, stderr.String())
+			}
+			if report.SchemaVersion != 1 || report.Error.Code != tt.wantCode || report.Error.ExitCode != tt.wantExit || report.Error.Command != tt.command {
+				t.Fatalf("unexpected error report: %+v", report)
+			}
+			if report.Error.Message == "" {
+				t.Fatal("error message is empty")
+			}
+		})
+	}
+}
+
+func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"help", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	var catalog struct {
+		SchemaVersion    int    `json:"schema_version"`
+		Name             string `json:"name"`
+		ProcessExitCodes []struct {
+			Code int `json:"code"`
+		} `json:"process_exit_codes"`
+		GlobalOptions []struct {
+			Name string `json:"name"`
+		} `json:"global_options"`
+		Commands []struct {
+			Name        string   `json:"name"`
+			SideEffects []string `json:"side_effects"`
+			Examples    []string `json:"examples"`
+			Environment struct {
+				Files     []string `json:"files"`
+				Variables []string `json:"variables"`
+			} `json:"environment"`
+			ExitCodes []struct {
+				Code int `json:"code"`
+			} `json:"exit_codes"`
+			Flags []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"flags"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
+	}
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 12 || len(catalog.ProcessExitCodes) != 3 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+		t.Fatalf("unexpected catalog header: %+v", catalog)
+	}
+	rollbackDeclaredDestructive := false
+	generateDeclaresDryRun := false
+	commandsSeen := make(map[string]bool, len(catalog.Commands))
+	processExitCodesSeen := make(map[int]bool, len(catalog.ProcessExitCodes))
+	expectedCommands := map[string]bool{
+		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true,
+		"generate": true, "doctor": true, "inspect": true, "uuid": true, "version": true, "help": true,
+	}
+	for _, command := range catalog.Commands {
+		if !expectedCommands[command.Name] || commandsSeen[command.Name] || len(command.Examples) == 0 || command.Environment.Files == nil || command.Environment.Variables == nil || len(command.ExitCodes) != 2 {
+			t.Errorf("command is missing complete machine-readable metadata: %+v", command)
+		}
+		commandsSeen[command.Name] = true
+		commandExitCodesSeen := make(map[int]bool, len(command.ExitCodes))
+		for _, exitCode := range command.ExitCodes {
+			commandExitCodesSeen[exitCode.Code] = true
+		}
+		if !commandExitCodesSeen[0] || !commandExitCodesSeen[1] {
+			t.Errorf("command %s has incomplete exit-code documentation: %v", command.Name, commandExitCodesSeen)
+		}
+		if !strings.HasPrefix(command.Examples[0], "forge ") {
+			t.Errorf("example is not a copyable Forge command: %q", command.Examples[0])
+		}
+		if command.Name == "rollback" && containsString(command.SideEffects, "database_destructive") {
+			rollbackDeclaredDestructive = true
+		}
+		if command.Name == "test" && (!containsString(command.Environment.Files, ".env.development") || !containsString(command.Environment.Variables, "FORGE_TEST_DATABASE_URL")) {
+			t.Errorf("test command omits its environment inputs: %+v", command.Environment)
+		}
+		if command.Name == "generate" {
+			for _, flag := range command.Flags {
+				if flag.Name == "--dry-run" && strings.Contains(flag.Description, "without creating") {
+					generateDeclaresDryRun = true
+				}
+			}
+		}
+	}
+	if !rollbackDeclaredDestructive || !generateDeclaresDryRun {
+		t.Fatal("catalog does not describe rollback's destructive effects and generate's read-only dry-run")
+	}
+	hasUsageExitCode := false
+	for _, exitCode := range catalog.ProcessExitCodes {
+		processExitCodesSeen[exitCode.Code] = true
+		hasUsageExitCode = hasUsageExitCode || exitCode.Code == 2
+	}
+	if !hasUsageExitCode || !processExitCodesSeen[0] || !processExitCodesSeen[1] {
+		t.Fatalf("catalog process exit codes are incomplete: %v", processExitCodesSeen)
+	}
+	if len(commandsSeen) != len(expectedCommands) {
+		t.Fatalf("catalog command set = %v, want %v", commandsSeen, expectedCommands)
+	}
+}
+
+func TestRunHelpRejectsUnknownFormat(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"help", "--xml"}, &stdout, &stderr); code == 0 {
+		t.Fatal("unsupported help format unexpectedly succeeded")
+	}
+}
+
+func TestRunDoctorJSONReturnsSecretSafeDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	var stdout bytes.Buffer
+	err := runDoctorAt([]string{"--json"}, &stdout, root, []string{
+		"FORGE_ENV=production",
+		"FORGE_HTTP_TRANSPORT=plain",
+		"FORGE_DATABASE_URL=postgres://alice:super-secret@db.example/app",
+	})
+	if !errors.Is(err, errDoctorUnhealthy) {
+		t.Fatalf("error = %v, want errDoctorUnhealthy", err)
+	}
+	if strings.Contains(stdout.String(), "super-secret") || strings.Contains(stdout.String(), "db.example") {
+		t.Fatalf("JSON diagnostic leaked configuration: %s", stdout.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, stdout.String())
+	}
+	if report.SchemaVersion != 1 || report.OK || len(report.Diagnostics) != 1 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	if report.Diagnostics[0].Code != "configuration.invalid" || report.Diagnostics[0].Remediation == "" {
+		t.Fatalf("diagnostic lacks stable code/remediation: %+v", report.Diagnostics[0])
+	}
+}
+
+func TestRunDoctorJSONReportsHealthyConfigurationWithoutDatabaseSecrets(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	var stdout bytes.Buffer
+	if err := runDoctorAt([]string{"--json"}, &stdout, root, []string{
+		"FORGE_DATABASE_URL=postgres://alice:super-secret@db.example/app?sslmode=verify-full",
+	}); err != nil {
+		t.Fatalf("run doctor: %v", err)
+	}
+	if strings.Contains(stdout.String(), "super-secret") || strings.Contains(stdout.String(), "db.example") {
+		t.Fatalf("JSON doctor leaked database URL details: %s", stdout.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, stdout.String())
+	}
+	if report.SchemaVersion != 1 || !report.OK || report.Environment != "development" || report.Database == "" || len(report.Diagnostics) != 0 {
+		t.Fatalf("unexpected healthy report: %+v", report)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunUUID(t *testing.T) {
@@ -70,7 +275,7 @@ func TestRunNewGeneratesApplicationWithoutDependencies(t *testing.T) {
 			t.Fatalf("missing %s: %v", path, err)
 		}
 	}
-	if !strings.Contains(stdout.String(), "docker compose up --build") {
+	if !strings.Contains(stdout.String(), "docker compose up --build") || !strings.Contains(stdout.String(), "http://127.0.0.1:8080/") {
 		t.Fatalf("missing next steps: %s", stdout.String())
 	}
 }
@@ -144,6 +349,9 @@ func TestGeneratedApplication(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dir, "vendor", "modules.txt")); err != nil {
 			t.Fatalf("framework was not vendored: %v", err)
+		}
+		if _, err := generateView(dir, "welcome"); err != nil {
+			t.Fatalf("generate an embedded view: %v", err)
 		}
 		for _, args := range [][]string{{"vet", "./..."}, {"test", "./..."}, {"build", "-o", os.DevNull, "./cmd/" + name}} {
 			command := exec.Command("go", args...)

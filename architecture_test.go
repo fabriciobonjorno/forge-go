@@ -15,10 +15,13 @@ const modulePath = "github.com/fabriciobonjorno/forge-go"
 var corePackages = []string{
 	modulePath,
 	modulePath + "/auth",
+	modulePath + "/agent",
 	modulePath + "/config",
 	modulePath + "/dbtest",
+	modulePath + "/events",
 	modulePath + "/fault",
 	modulePath + "/health",
+	modulePath + "/jobs",
 	modulePath + "/migrate",
 	modulePath + "/httpserver",
 	modulePath + "/pagination",
@@ -26,6 +29,7 @@ var corePackages = []string{
 	modulePath + "/sqldb",
 	modulePath + "/tenancy",
 	modulePath + "/uuid",
+	modulePath + "/views",
 	modulePath + "/web",
 }
 

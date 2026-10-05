@@ -7,17 +7,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fabriciobonjorno/forge-go/auth"
 	"github.com/fabriciobonjorno/forge-go/internal/scaffold"
 )
 
 func TestGenerateCreatesDockerizedApplication(t *testing.T) {
-	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "billing-api")
 	paths, err := scaffold.Generate(scaffold.Options{Name: "billing-api", Module: "example.com/acme/billing", Dir: dir, Database: "postgresql"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"Dockerfile", ".dockerignore", "compose.yaml", ".github/workflows/ci.yml", ".github/dependabot.yml", "cmd/billing-api/main.go", "go.mod", "db/db.go", "db/migrations/.keep", ".env.development"} {
+	for _, required := range []string{"Dockerfile", ".dockerignore", "compose.yaml", ".github/workflows/ci.yml", ".github/dependabot.yml", "cmd/billing-api/main.go", "go.mod", "db/db.go", "db/migrations/.keep", ".env.development", ".env.local"} {
 		if !contains(paths, filepath.FromSlash(required)) {
 			t.Fatalf("missing %s in %v", required, paths)
 		}
@@ -44,7 +44,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		".dockerignore": {".git", ".env"},
 		"compose.yaml": {
 			"image: postgres:18-alpine",
-			"FORGE_AUTH_MFA_KEY: ${FORGE_AUTH_MFA_KEY:-}",
+			"env_file:\n    - .env.local",
 			"POSTGRES_DB: billing_api_development",
 			"postgres:/var/lib/postgresql",
 			`command: ["migrate"]`,
@@ -53,6 +53,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			`"127.0.0.1:` + port + `:5432"`,
 		},
 		".env.development": {"FORGE_DATABASE_URL=postgres://billing_api:development@127.0.0.1:" + port + "/billing_api_development?sslmode=disable", "FORGE_TEST_DATABASE_URL="},
+		".env.local":       {"FORGE_AUTH_MFA_KEY="},
 		".gitignore":       {".env.local"},
 		"go.mod":           {"module example.com/acme/billing"},
 		"cmd/billing-api/main.go": {
@@ -67,6 +68,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
 			"auth.NewLoginService(",
 			"auth.WithSecurityAuditor(repository)",
+			"password recovery delivery is not configured",
 			"auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())",
 			"auth.NewMFAService(",
 			"auth.WithMFAAuditor(repository)",
@@ -79,17 +81,30 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		"README.md": {
 			"POST /auth/login",
 			"POST /auth/logout",
+			"`/auth/recovery/request`",
+			"`/auth/recovery/reset`",
+			"`/auth/cookie/login`",
 			"GET /v1/auth/session",
 			"POST /auth/mfa/complete",
 			"FORGE_AUTH_MFA_KEY",
 			"Forge's identity migrations",
 		},
-		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", `FORGE_TEST_REQUIRE_DATABASE: "true"`},
+		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", "POSTGRES_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable", `FORGE_TEST_REQUIRE_DATABASE: "true"`},
 	})
+	key := readEnvValue(t, filepath.Join(dir, ".env.local"), "FORGE_AUTH_MFA_KEY")
+	if _, err := auth.NewAESGCMSecretCipherBase64(key); err != nil {
+		t.Fatalf("generated MFA key is not accepted by the framework: %v", err)
+	}
+	localEnv, err := os.Stat(filepath.Join(dir, ".env.local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := localEnv.Mode().Perm(); got != 0o600 {
+		t.Fatalf(".env.local permissions = %04o, want 0600", got)
+	}
 }
 
 func TestGenerateWithoutDatabase(t *testing.T) {
-	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "edge")
 	paths, err := scaffold.Generate(scaffold.Options{Name: "edge", Dir: dir})
 	if err != nil {
@@ -130,8 +145,48 @@ func assertContains(t *testing.T, dir string, expectations map[string][]string) 
 	}
 }
 
-func TestGenerateRefusesNonEmptyDirectory(t *testing.T) {
+func readEnvValue(t *testing.T, path, key string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	t.Fatalf("%s is missing from %s", key, path)
+	return ""
+}
+
+func TestGeneratedReadinessUsesFrameworkRoute(t *testing.T) {
 	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "api")
+	if _, err := scaffold.Generate(scaffold.Options{
+		Name:     "api",
+		Dir:      dir,
+		Database: "postgresql",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	bootstrap, err := os.ReadFile(filepath.Join(dir, "app", "bootstrap", "bootstrap.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, duplicate := range []string{
+		`app.HandleFunc("GET /health/ready"`,
+		"func ready(",
+	} {
+		if strings.Contains(string(bootstrap), duplicate) {
+			t.Errorf("generated bootstrap duplicates framework readiness route with %q", duplicate)
+		}
+	}
+}
+
+func TestGenerateRefusesNonEmptyDirectory(t *testing.T) {
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "keep.txt")
 	if err := os.WriteFile(existing, []byte("user data"), 0o600); err != nil {
@@ -147,7 +202,6 @@ func TestGenerateRefusesNonEmptyDirectory(t *testing.T) {
 }
 
 func TestNormalizeValidatesInput(t *testing.T) {
-	t.Parallel()
 	valid, err := scaffold.Normalize(scaffold.Options{Name: "my-app"})
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +253,6 @@ func contains(values []string, want string) bool {
 }
 
 func TestGenerateForEveryDatabase(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		database  string
 		want      map[string][]string
@@ -228,7 +281,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			want: map[string][]string{
 				"compose.yaml":             {"image: mariadb:11.8", "MARIADB_DATABASE: shop_development", "FORGE_DATABASE_URL: mysql://shop:development@mariadb:3306/shop_development", "healthcheck.sh"},
 				"cmd/shop/main.go":         {"mysql.Commands(db.Migrations())"},
-				".github/workflows/ci.yml": {"image: mariadb:11.8", "healthcheck.sh --connect --innodb_initialized"},
+				".github/workflows/ci.yml": {"image: mariadb:11.8", "MARIADB_ROOT_PASSWORD: forge", "healthcheck.sh --connect --innodb_initialized", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                {"MariaDB 11.8"},
 			},
 			forbidden: map[string]string{
@@ -259,8 +312,8 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.database, func(t *testing.T) {
-			t.Parallel()
-			dir := filepath.Join(t.TempDir(), "shop")
+			// Use t.TempDir() directly for better isolation between subtests
+			dir := t.TempDir()
 			if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: test.database}); err != nil {
 				t.Fatal(err)
 			}
@@ -279,7 +332,6 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 }
 
 func TestNormalizeDatabase(t *testing.T) {
-	t.Parallel()
 	for input, want := range map[string]string{"postgres": "postgresql", "PostgreSQL": "postgresql", "pg": "postgresql", "sqlite3": "sqlite", "none": "", "": "", "mariadb": "mariadb"} {
 		opts, err := scaffold.Normalize(scaffold.Options{Name: "app", Database: input})
 		if err != nil || opts.Database != want {
@@ -292,7 +344,6 @@ func TestNormalizeDatabase(t *testing.T) {
 }
 
 func TestLongNamesRespectDatabaseIdentifierLimits(t *testing.T) {
-	t.Parallel()
 	name := "a" + strings.Repeat("b-", 31) // 63 characters, the maximum
 	dir := filepath.Join(t.TempDir(), "long")
 	if _, err := scaffold.Generate(scaffold.Options{Name: name, Dir: dir, Database: "mysql"}); err != nil {

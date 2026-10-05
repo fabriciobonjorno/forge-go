@@ -98,6 +98,7 @@ func (fn ResolverFunc) ResolveSession(ctx context.Context, digest Digest) (Sessi
 
 type Middleware struct {
 	resolver Resolver
+	auditor  SecurityAuditor
 	now      func() time.Time
 }
 
@@ -109,6 +110,18 @@ func WithClock(now func() time.Time) Option {
 			return errors.New("authentication clock is required")
 		}
 		m.now = now
+		return nil
+	}
+}
+
+// WithAuthenticationAuditor records rejected valid sessions and permission
+// denials for requests that pass through this middleware.
+func WithAuthenticationAuditor(auditor SecurityAuditor) Option {
+	return func(m *Middleware) error {
+		if auditor == nil {
+			return errors.New("authentication security auditor is required")
+		}
+		m.auditor = auditor
 		return nil
 	}
 }
@@ -139,7 +152,7 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			unauthorized(w, r, err)
 			return
 		}
-		ctx, err := m.authenticateContext(r.Context(), secret)
+		ctx, err := m.authenticateContext(r, secret)
 		if err != nil {
 			if errors.Is(err, ErrCredentialsInvalid) {
 				unauthorized(w, r, ErrCredentialsInvalid)
@@ -152,30 +165,45 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 	})
 }
 
-func (m *Middleware) authenticateContext(ctx context.Context, secret string) (context.Context, error) {
+func (m *Middleware) authenticateContext(r *http.Request, secret string) (context.Context, error) {
 	token, err := ParseToken(secret)
 	if err != nil {
 		return nil, ErrCredentialsInvalid
 	}
-	session, found, err := m.resolver.ResolveSession(ctx, token.Digest())
+	session, found, err := m.resolver.ResolveSession(r.Context(), token.Digest())
 	if err != nil {
 		return nil, err
 	}
 	if !found || session.ExpiresAt.IsZero() || !m.now().Before(session.ExpiresAt) {
+		m.recordRejectedSession(r, token.Digest())
 		return nil, ErrCredentialsInvalid
 	}
 	if session.Principal.subjectID.Version() != 7 || session.Principal.subjectID.Variant() != 2 {
 		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).
 			WithCause(errors.New("session resolver returned an invalid principal"))
 	}
-	ctx, err = tenancy.WithContext(ctx, session.Principal.tenant)
+	ctx, err := tenancy.WithContext(r.Context(), session.Principal.tenant)
 	if err != nil {
 		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).WithCause(err)
 	}
-	return withPrincipal(ctx, session.Principal), nil
+	ctx = withPrincipal(ctx, session.Principal)
+	return ctx, nil
 }
 
 func Require(permission Permission, next http.Handler) (http.Handler, error) {
+	return require(permission, next, nil)
+}
+
+// RequireAudited is Require with a security-audit event for an authenticated
+// principal denied the requested permission.
+func RequireAudited(permission Permission, next http.Handler, auditor SecurityAuditor) (http.Handler, error) {
+	if auditor == nil {
+		return nil, errors.New("authorization security auditor is required")
+	}
+	return require(permission, next, auditor)
+}
+
+func require(permission Permission, next http.Handler, auditor SecurityAuditor) (http.Handler, error) {
 	if _, err := NewPermission(string(permission)); err != nil {
 		return nil, err
 	}
@@ -189,6 +217,7 @@ func Require(permission Permission, next http.Handler) (http.Handler, error) {
 			return
 		}
 		if !principal.Can(permission) {
+			recordAuthorizationDenial(r, principal, auditor)
 			web.Error(w, r, ErrPermissionDenied)
 			return
 		}
@@ -208,6 +237,30 @@ func FromContext(ctx context.Context) (Principal, bool) {
 	}
 	principal, ok := ctx.Value(principalKey{}).(Principal)
 	return principal, ok
+}
+
+func (m *Middleware) recordRejectedSession(r *http.Request, credentialDigest Digest) {
+	if m.auditor == nil {
+		return
+	}
+	err := m.auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+		Kind:             SecuritySessionRejected,
+		Outcome:          SecurityOutcomeDenied,
+		CredentialDigest: credentialDigest,
+	})
+	logSecurityAuditFailure(r, securityAuditError(err, false))
+}
+
+func recordAuthorizationDenial(r *http.Request, principal Principal, auditor SecurityAuditor) {
+	if auditor == nil {
+		return
+	}
+	err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+		Kind:    SecurityAuthorizationDenied,
+		Outcome: SecurityOutcomeDenied,
+		ActorID: principal.SubjectID(),
+	})
+	logSecurityAuditFailure(r, securityAuditError(err, false))
 }
 
 func bearer(values []string) (string, error) {

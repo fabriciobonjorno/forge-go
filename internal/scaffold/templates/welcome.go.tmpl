@@ -1,0 +1,89 @@
+package bootstrap
+
+import (
+	"embed"
+	"io"
+	"net/http"
+)
+
+//go:embed assets/forge-go-logo.png
+var brandAssets embed.FS
+
+const welcomePage = `<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="theme-color" content="#100d0a">
+	<meta name="description" content="A Go service built with Forge Go.">
+	<title>Welcome to {{.Name}} · Forge Go</title>
+	<style>
+		:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #100d0a; color: #f2e9dd; }
+		* { box-sizing: border-box; }
+		body { min-height: 100vh; margin: 0; background: radial-gradient(ellipse at 18% 12%, rgba(183, 81, 26, .16), transparent 36rem), radial-gradient(ellipse at 88% 92%, rgba(102, 45, 20, .18), transparent 34rem), #100d0a; }
+		a { color: inherit; }
+		a:focus-visible { outline: 3px solid #f2a45d; outline-offset: 4px; }
+		.frame { width: min(1080px, 100%); min-height: 100vh; margin: 0 auto; padding: 28px clamp(20px, 5vw, 64px); display: flex; flex-direction: column; }
+		.masthead { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(210, 129, 70, .22); padding-bottom: 16px; color: #c9a17f; font-size: 11px; letter-spacing: .18em; text-transform: uppercase; }
+		.masthead strong { color: #f2e9dd; font-weight: 600; }
+		main { flex: 1; display: grid; place-items: center; padding: 44px 0; }
+		.welcome { width: 100%; display: grid; grid-template-columns: minmax(220px, .85fr) minmax(0, 1.15fr); align-items: center; gap: clamp(28px, 6vw, 72px); border: 1px solid rgba(210, 129, 70, .38); border-radius: 3px; padding: clamp(22px, 5vw, 58px); background: linear-gradient(135deg, rgba(255, 255, 255, .035), transparent 52%); box-shadow: 0 24px 80px rgba(0, 0, 0, .32), inset 0 1px rgba(255, 221, 183, .06); }
+		.brand-art { display: block; width: min(100%, 390px); margin: 0 auto; aspect-ratio: 1; object-fit: contain; }
+		.eyebrow { margin: 0 0 15px; color: #e79758; font-size: 11px; font-weight: 650; letter-spacing: .2em; text-transform: uppercase; }
+		h1 { margin: 0; color: #fff8ef; font-family: Georgia, "Times New Roman", serif; font-size: clamp(36px, 5vw, 62px); font-weight: 400; letter-spacing: -.035em; line-height: 1.04; overflow-wrap: anywhere; }
+		.lede { max-width: 42ch; margin: 21px 0 0; color: #c5b8a9; font-size: 16px; line-height: 1.7; }
+		.actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+		.button { min-height: 46px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; padding: 0 17px; border: 1px solid rgba(230, 165, 111, .55); border-radius: 2px; font-size: 14px; font-weight: 600; text-decoration: none; transition: background-color .18s ease, border-color .18s ease; }
+		.button-primary { border-color: #e79a5c; background: #e79a5c; color: #1a1009; }
+		.button-primary:hover { border-color: #ffc38d; background: #ffc38d; }
+		.button-secondary { color: #f0d3b7; }
+		.button-secondary:hover { border-color: #e79a5c; background: rgba(231, 154, 92, .09); }
+		.endpoints { display: flex; flex-wrap: wrap; gap: 9px; margin: 26px 0 0; padding: 0; list-style: none; }
+		.endpoints a { display: inline-block; padding: 7px 10px; border: 1px solid rgba(210, 129, 70, .2); color: #bca994; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration: none; }
+		.endpoints a:hover { border-color: rgba(231, 154, 92, .6); color: #ffe0c2; }
+		footer { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid rgba(210, 129, 70, .22); padding-top: 15px; color: #8e7966; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+		@media (max-width: 700px) { .frame { padding-top: 20px; } .welcome { grid-template-columns: 1fr; gap: 8px; } .brand-art { width: min(76vw, 300px); } main { padding: 28px 0; } footer { flex-direction: column; } }
+		@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+	</style>
+</head>
+<body>
+	<div class="frame">
+		<header class="masthead"><strong>Forge Go</strong><span>Go Framework</span></header>
+		<main>
+			<section class="welcome" aria-labelledby="welcome-title">
+				<img class="brand-art" src="/assets/forge-go-logo.png" alt="Forge Go — Go Framework">
+				<div>
+					<p class="eyebrow">Your service is running</p>
+					<h1 id="welcome-title">Welcome to {{.Name}}</h1>
+					<p class="lede">Your Go service is ready. Replace this welcome page as you add the routes and capabilities your application needs.</p>
+					<div class="actions">
+						<a class="button button-primary" href="/v1/status">View service status <span aria-hidden="true">→</span></a>
+						<a class="button button-secondary" href="https://github.com/fabriciobonjorno/forge-go">Forge documentation</a>
+					</div>
+					<nav aria-label="Service health endpoints">
+						<ul class="endpoints">
+							<li><a href="/health/live">/health/live</a></li>
+							<li><a href="/health/ready">/health/ready</a></li>
+						</ul>
+					</nav>
+				</div>
+			</section>
+		</main>
+		<footer><span>Forge Go · Go Framework</span><span>Built to get you moving</span></footer>
+	</div>
+</body>
+</html>`
+
+func welcome(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'")
+	_, _ = io.WriteString(w, welcomePage)
+}
+
+func brandAssetsHandler() http.Handler {
+	assets := http.FileServer(http.FS(brandAssets))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		assets.ServeHTTP(w, r)
+	})
+}

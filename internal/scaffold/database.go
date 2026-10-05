@@ -42,6 +42,7 @@ type databaseProfile struct {
 	TestPackage string // its test helper package
 	Server      bool
 	Identity    bool // generated Forge identity wiring is available
+	Jobs        bool // generated Forge jobs wiring is available
 
 	// Server databases only.
 	Service       string      // compose service and host name
@@ -63,7 +64,7 @@ func profileFor(name, user, database string) *databaseProfile {
 	switch name {
 	case "postgresql":
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
-			Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true, Identity: true,
+			Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true, Identity: true, Jobs: true,
 			ProductionTLS: "`sslmode=verify-full` or `verify-ca` (`sslrootcert` for a private CA)",
 			MigrationLock: "a PostgreSQL advisory lock",
 			Service:       "postgres", Image: "postgres:18-alpine", ContainerPort: 5432,
@@ -80,7 +81,7 @@ func profileFor(name, user, database string) *databaseProfile {
 		}
 	case "mysql":
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
-			Name: name, Title: "MySQL 8.4", Adapter: "mysql", TestPackage: "mysqltest", Server: true,
+			Name: name, Title: "MySQL 8.4", Adapter: "mysql", TestPackage: "mysqltest", Server: true, Jobs: true,
 			ProductionTLS: "`tls=true`", MigrationLock: "a MySQL named lock (GET_LOCK)",
 			Service: "mysql", Image: "mysql:8.4", ContainerPort: 3306, VolumePath: "/var/lib/mysql",
 			Env: [][2]string{
@@ -96,7 +97,7 @@ func profileFor(name, user, database string) *databaseProfile {
 		}
 	case "mariadb":
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
-			Name: name, Title: "MariaDB 11.8", Adapter: "mysql", TestPackage: "mysqltest", Server: true,
+			Name: name, Title: "MariaDB 11.8", Adapter: "mysql", TestPackage: "mysqltest", Server: true, Jobs: true,
 			ProductionTLS: "`tls=true`", MigrationLock: "a MariaDB named lock (GET_LOCK)",
 			Service: "mariadb", Image: "mariadb:11.8", ContainerPort: 3306, VolumePath: "/var/lib/mysql",
 			Env: [][2]string{

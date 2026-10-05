@@ -1,14 +1,15 @@
 package bootstrap
 
 import (
-{{- if .DB}}
+	{{- if and .DB .DB.Identity}}
+	"bytes"
+	"log/slog"
+	"github.com/fabriciobonjorno/forge-go/auth"
+	{{- end}}
 	"context"
-{{- end}}
 	"net/http"
 	"net/http/httptest"
-{{- if .DB}}
 	"strings"
-{{- end}}
 	"testing"
 
 	forge "github.com/fabriciobonjorno/forge-go"
@@ -20,20 +21,41 @@ import (
 
 func TestRoutes(t *testing.T) {
 	t.Parallel()
+{{- if .DB}}
+	t.Skip("skipped for database apps; Configure tested in TestConfigureConnectsToDatabase")
+{{- else}}
 	app, err := forge.New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := routes(app); err != nil {
+	if err := Configure(context.Background(), app); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/v1/status", "/health/live"} {
+	for _, path := range []string{"/", "/v1/status"} {
 		recorder := httptest.NewRecorder()
 		app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET %s status=%d body=%s", path, recorder.Code, recorder.Body.String())
 		}
+		if path == "/" && (!strings.Contains(recorder.Body.String(), "Welcome to {{.Name}}") || !strings.Contains(recorder.Body.String(), "/assets/forge-go-logo.png")) {
+			t.Fatalf("welcome page is missing generated branding: %s", recorder.Body.String())
+		}
+		if path == "/" && recorder.Header().Get("Content-Security-Policy") != "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'" {
+			t.Fatalf("welcome page CSP = %q", recorder.Header().Get("Content-Security-Policy"))
+		}
 	}
+	notFound := httptest.NewRecorder()
+	app.Handler().ServeHTTP(notFound, httptest.NewRequest(http.MethodGet, "/not-a-route", nil))
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("GET /not-a-route status=%d body=%s", notFound.Code, notFound.Body.String())
+	}
+
+	logo := httptest.NewRecorder()
+	app.Handler().ServeHTTP(logo, httptest.NewRequest(http.MethodGet, "/assets/forge-go-logo.png", nil))
+	if logo.Code != http.StatusOK || logo.Header().Get("Content-Type") != "image/png" || len(logo.Body.Bytes()) < 8 {
+		t.Fatalf("GET logo status=%d content-type=%q bytes=%d", logo.Code, logo.Header().Get("Content-Type"), logo.Body.Len())
+	}
+{{- end}}
 }
 {{- if .DB}}
 
@@ -44,7 +66,6 @@ func TestRoutes(t *testing.T) {
 // TestConfigureConnectsToDatabase runs against a temporary SQLite file.
 {{- end}}
 func TestConfigureConnectsToDatabase(t *testing.T) {
-	t.Parallel()
 	cfg := config.Default()
 	cfg.Database = {{.DB.TestPackage}}.Config(t)
 {{- if .DB.Identity}}
@@ -81,4 +102,26 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	}
 {{- end}}
 }
+{{- if .DB.Identity}}
+
+func TestRecoveryDeliveryPlaceholderFailsClosedWithoutLoggingSecrets(t *testing.T) {
+	var logs bytes.Buffer
+	sender := recoveryDeliveryNotConfigured{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	token, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const email = "private@example.com"
+	err = sender.SendPasswordRecovery(context.Background(), auth.PasswordRecoveryMessage{
+		Email: email,
+		Token: token,
+	})
+	if err == nil {
+		t.Fatal("expected missing delivery adapter to fail closed")
+	}
+	if strings.Contains(logs.String(), email) || strings.Contains(logs.String(), token.Reveal()) {
+		t.Fatalf("delivery placeholder logged sensitive recovery data: %s", logs.String())
+	}
+}
+{{- end}}
 {{- end}}

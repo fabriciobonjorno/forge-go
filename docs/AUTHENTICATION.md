@@ -38,6 +38,19 @@ if err != nil {
 app.Handle("GET /v1/tasks", middleware.Authenticate(handler))
 ```
 
+Applications may configure `auth.WithAuthenticationAuditor(auditor)` to record
+syntactically valid bearer or cookie tokens rejected as unknown, revoked, or
+expired. The event stores only the token digest; missing or malformed
+credentials are not persisted. Audit failures are logged without changing the
+existing `401` response. Because each rejected valid token can produce a
+database write, deployments should apply request limits and plan audit
+retention/capacity before enabling this option.
+
+Use `auth.RequireAudited(permission, handler, auditor)` when permission
+denials should be recorded. The event contains only the authenticated actor
+ID; the permission and tenant are deliberately omitted from the audit payload.
+`auth.Require` remains unchanged and does not persist denial events.
+
 Permissions use explicit lowercase `resource:action` names and have no
 wildcards. `auth.Require` denies by default: no principal is `401`; a current
 principal without the permission is `403`. Authentication installs both the

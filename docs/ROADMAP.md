@@ -1,6 +1,6 @@
 # Roadmap
 
-Phases are sequential in intent but may overlap. Status reflects the `main`
+Phases are sequential in intent but may overlap. Status reflects the current
 branch. Nothing in a phase marked *planned* is implemented.
 
 | Phase | Scope                                              | Status  |
@@ -9,10 +9,10 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 1     | Core runtime, config, CLI, lifecycle, HTTP         | Done    |
 | 2     | Databases, migrations, repositories, transactions  | Done    |
 | 3     | Authentication, authorization, tenancy             | In progress |
-| 4     | Jobs, events, outbox, scheduling                   | Planned |
+| 4     | Jobs, events, outbox, scheduling                   | Done    |
 | 5     | OpenTelemetry                                      | Planned |
 | 6     | OpenAPI and tooling                                | Planned |
-| 7     | AI API and CLI subsystem                           | Planned |
+| 7     | AI API and CLI subsystem                           | In progress |
 | 8     | Code generation                                    | Planned |
 | 9     | Performance                                        | Planned |
 | 10    | Security hardening                                 | Planned |
@@ -123,7 +123,8 @@ Not scheduled in a specific phase unless noted.
 - Readiness results are not cached; every probe runs the checks.
 - Matched requests are looked up in `ServeMux` twice (once to detect
   unmatched routes); tracked for Phase 9.
-- Multi-tenancy and PostgreSQL row-level security: Phase 3.
+- MySQL/MariaDB/SQLite tenant isolation is enforced at the application layer;
+  only PostgreSQL currently has the built-in RLS transaction helper.
 - Soft delete and audit fields (`created_by`, `updated_by`, `deleted_at`)
   have no framework support yet; applications add them in their own SQL.
 - Keyset pagination orders by UUIDv7 only; there is no cursor for other sort
@@ -174,26 +175,43 @@ Implemented foundation:
 - PostgreSQL identity wiring in generated applications, including migrations,
   login/logout/session routes, optional MFA challenge completion, and the
   `FORGE_AUTH_MFA_KEY` configuration.
+- Generated PostgreSQL applications include bearer and secure-cookie login,
+  logout and session routes, plus password-recovery request/reset routes.
+  Recovery delivery deliberately fails closed until an application installs a
+  `RecoverySender`; the generated placeholder must never claim delivery or log
+  recovery tokens.
 - Structured audit events for login, logout, password recovery/reset, MFA
   challenge and factor lifecycle operations. Audit persistence is opt-in for
   framework services; generated PostgreSQL login, MFA, and logout flows wire
   the repository as their auditor.
+- Optional authentication middleware and `RequireAudited` hooks for rejected
+  valid sessions and permission denials. These are opt-in because each rejected
+  valid token can cause a database write; deployments should limit request
+  volume and plan retention/capacity.
 
-Remaining boundaries: generated applications do not choose account
-provisioning, password-recovery delivery, browser-cookie routes, or MFA
-enrollment/rotation step-up policy. Those framework primitives require
-application-specific decisions and are documented in
+Remaining boundaries: generated applications do not provision the first user
+or tenant; password-recovery delivery needs a configured sender; and MFA
+enrollment/rotation still requires an application-specific step-up policy.
+Those framework primitives require application-specific decisions and are documented in
 [AUTHENTICATION.md](AUTHENTICATION.md) and [MFA.md](MFA.md). PostgreSQL is the
 only built-in identity persistence adapter and the only adapter with a
 database-enforced RLS helper. MySQL, MariaDB, and SQLite use the documented
 application-layer tenant-scoping contract; Forge does not claim equivalent
 database enforcement ([MULTI_TENANCY.md](MULTI_TENANCY.md)). Broader audit
-coverage for authorization denials and rejected session resolution remains a
-separate scope decision.
+coverage for missing/malformed credentials and infrastructure failures during
+session resolution is intentionally omitted to avoid persisting unbounded
+untrusted input or coupling audit availability to resolver outages.
 
 ## Phase 4 - Asynchronous work
 
-Background jobs, domain events, a transactional outbox, and scheduling.
+The event envelope, atomic PostgreSQL persistence, and bounded concurrent
+dispatcher with renewable leases, token-fenced acknowledgements, exponential
+retry, and a terminal dead-letter state are implemented. Dead-letter replay,
+queue metrics (`Dispatcher.Stats`, `ListDeadLetters`), an in-process job
+scheduler (`jobs.Scheduler`), and generated-application wiring are complete.
+See [ADR 0018](adr/0018-transactional-outbox-foundation.md),
+[ADR 0019](adr/0019-outbox-dispatch.md), and
+[ADR 0020](adr/0020-background-jobs-scheduling.md).
 
 ## Phase 5 - Observability
 
@@ -215,11 +233,71 @@ Intent -> Policy -> Validation -> Authorization -> Execution -> Audit
 No step may be skipped, and execution never runs with more privilege than the
 authorizing principal.
 
+AI-friendly developer experience checklist:
+
+- [x] `forge help --json`: versioned command/flag schema and declared
+  side-effect categories; covered by `TestRunHelpJSONProvidesCompleteCommandCatalog`.
+- [x] `forge doctor --json`: schema-versioned diagnostics with stable codes
+  and remediation, tested for valid/invalid configuration and secret redaction.
+- [x] Extend the catalog with per-command options, copyable examples,
+  environment-file/variable inputs and process/command exit codes.
+- [x] `forge inspect --json`: report module, Go/framework versions, database adapter,
+  migrations, routes and enabled first-party modules without executing writes.
+- [x] Structured CLI errors: stable codes and safe context, with human output
+  remaining the default and exit codes documented.
+- [x] `forge generate migration|view NAME --dry-run`: show exact planned files
+  without creating directories or files; existing outputs are refused.
+- [x] Provider-neutral `agent.Engine`: only registered actions run, and each
+  call passes policy, input validation, exact principal permission, execution,
+  and mandatory journal steps. Destructive/external effects additionally
+  require the application's explicit approval adapter.
+- [x] PostgreSQL execution journal persists an attempt before effects,
+  rejects tenant/actor-scoped intent replay, omits prompts and payloads, and
+  protects records with RLS. Uncertain post-execution outcomes stay visible.
+- [x] Bounded, tenant-scoped reconciliation listing for reserved and unresolved
+  agent executions; requires the explicit `agent:reconcile` permission and
+  returns metadata only. Applying a reconciliation remains application-owned.
+- [x] Record one operator decision for an explicitly unresolved execution in a
+  separate tenant-RLS-protected table; serialize concurrent decisions and never
+  mutate the original journal row or automatically retry the action.
+- [ ] Define action-specific worker-liveness/fencing for executions left
+  `reserved` after process crashes. A lease expiry alone cannot prove that an
+  executor or external operation stopped; current API deliberately refuses
+  generic resolution or retry of these rows.
+- [ ] First-party execution journals and migration wiring for MySQL, MariaDB
+  and SQLite; provider runtime and generated agent actions are also not included.
+- [x] Agent-oriented CLI guide: quickstart, copyable commands, machine-readable
+  catalog/error references and explicit database/security limits
+  ([AI_AGENT_GUIDE.md](AI_AGENT_GUIDE.md)).
+- [x] CLI contract tests prove stable JSON error output, secret redaction and
+  that `forge inspect --json` does not modify project files.
+- [x] Agent tests prove policy/validation/permission/approval/journal ordering,
+  refusal of unauthorized actions and replay, tenant isolation, and surfaced
+  uncertain outcomes. The CLI remains outside this authorization boundary.
+
 ## Phase 8 - Code generation
 
 `forge generate resource` and related generators that create hexagonal layers
 (`app/domain`, `app/application`, `app/adapters`, `app/infrastructure`) only
 when they have code to hold. `forge generate migration` already exists.
+
+Generator checklist (planned unless an implementation and its tests prove
+otherwise):
+
+- [ ] `forge generate resource NAME`: coherent migration, validation,
+  persistence, HTTP and tests; no empty layers or public CRUD by default.
+- [ ] Explicit resource scope: `--tenant-scoped` versus `--global`, with the
+  correct database-specific isolation pattern and cross-tenant tests.
+- [ ] Resource-generator `--dry-run` and refuse-overwrite behavior with stable,
+  reviewable output (migration/view previews are implemented separately).
+- [ ] `forge generate job NAME`: bounded execution, shutdown behavior,
+  retries/idempotency guidance and generated tests.
+- [x] `forge generate view NAME`: embedded server-rendered Go HTML template
+  with contextual escaping and buffered execution; no database write semantics.
+- [ ] SQL view generators remain separate from server-rendered HTML and need
+  explicit database-dialect and tenant-isolation contracts.
+- [ ] Generated applications compile, vet, test and pass database/Docker
+  smoke checks for every supported profile.
 
 ## Phase 9 - Performance
 

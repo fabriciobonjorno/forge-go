@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,47 +16,103 @@ import (
 )
 
 const maxUUIDCount = 1000
+const jsonErrorFormatFlag = "--error-format=json"
+
+var errDoctorUnhealthy = errors.New("doctor found invalid configuration")
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	jsonErrors := len(args) > 0 && args[0] == jsonErrorFormatFlag
+	if jsonErrors {
+		args = args[1:]
+	}
 	if len(args) == 0 {
+		if jsonErrors {
+			writeCLIError(stderr, "command.required", "A command is required.", 2, "")
+			return 2
+		}
 		usage(stderr)
 		return 2
+	}
+	commandStderr := stderr
+	if jsonErrors {
+		// Delegated tools and flag parsers can print paths, arguments, or other
+		// input-derived text. Keep stderr machine-readable in this mode.
+		commandStderr = io.Discard
 	}
 	var err error
 	switch args[0] {
 	case "version":
 		err = runVersion(args[1:], stdout)
 	case "uuid":
-		err = runUUID(args[1:], stdout, stderr)
+		err = runUUID(args[1:], stdout, commandStderr)
 	case "doctor":
 		err = runDoctor(args[1:], stdout)
+	case "inspect":
+		err = runInspect(args[1:], stdout)
 	case "new":
-		err = runNew(args[1:], stdout, stderr)
+		err = runNew(args[1:], stdout, commandStderr)
 	case "dev":
-		err = runDev(args[1:], stdout, stderr)
+		err = runDev(args[1:], stdout, commandStderr)
 	case "build":
-		err = runBuild(args[1:], stdout, stderr)
+		err = runBuild(args[1:], stdout, commandStderr)
 	case "test":
-		err = runTest(args[1:], stdout, stderr)
+		err = runTest(args[1:], stdout, commandStderr)
 	case "migrate":
-		err = runMigrate(args[1:], stdout, stderr)
+		err = runMigrate(args[1:], stdout, commandStderr)
 	case "rollback":
-		err = runRollback(args[1:], stdout, stderr)
+		err = runRollback(args[1:], stdout, commandStderr)
 	case "generate":
 		err = runGenerate(args[1:], stdout)
-	case "help", "-h", "--help":
+	case "help":
+		err = runHelp(args[1:], stdout)
+	case "-h", "--help":
 		usage(stdout)
 		return 0
 	default:
+		if jsonErrors {
+			writeCLIError(stderr, "command.unknown", "Unknown command.", 2, "")
+			return 2
+		}
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		usage(stderr)
 		return 2
 	}
 	if err != nil {
+		if errors.Is(err, errDoctorUnhealthy) {
+			return 1
+		}
+		if errors.Is(err, errInspectIncomplete) {
+			return 1
+		}
+		if jsonErrors {
+			writeCLIError(stderr, "command.failed", "Command failed.", 1, args[0])
+			return 1
+		}
 		fmt.Fprintf(stderr, "forge: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+type cliErrorReport struct {
+	SchemaVersion int             `json:"schema_version"`
+	Error         cliErrorDetails `json:"error"`
+}
+
+type cliErrorDetails struct {
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+	ExitCode int    `json:"exit_code"`
+	Command  string `json:"command,omitempty"`
+}
+
+func writeCLIError(output io.Writer, code, message string, exitCode int, command string) {
+	_ = json.NewEncoder(output).Encode(cliErrorReport{
+		SchemaVersion: 1,
+		Error: cliErrorDetails{
+			Code: code, Message: message, ExitCode: exitCode, Command: command,
+		},
+	})
 }
 
 func runVersion(args []string, output io.Writer) error {
@@ -89,24 +146,84 @@ func runUUID(args []string, output, errorOutput io.Writer) error {
 }
 
 func runDoctor(args []string, output io.Writer) error {
-	if len(args) != 0 {
-		return errors.New("doctor accepts no arguments")
+	return runDoctorAt(args, output, ".", os.Environ())
+}
+
+type doctorReport struct {
+	SchemaVersion int                `json:"schema_version"`
+	OK            bool               `json:"ok"`
+	Environment   string             `json:"environment,omitempty"`
+	Database      string             `json:"database,omitempty"`
+	Diagnostics   []doctorDiagnostic `json:"diagnostics"`
+}
+
+type doctorDiagnostic struct {
+	Code        string `json:"code"`
+	Severity    string `json:"severity"`
+	Summary     string `json:"summary"`
+	Remediation string `json:"remediation"`
+}
+
+func runDoctorAt(args []string, output io.Writer, root string, baseEnv []string) error {
+	jsonOutput := len(args) == 1 && args[0] == "--json"
+	if len(args) != 0 && !jsonOutput {
+		return errors.New("usage: forge doctor [--json]")
 	}
-	env, err := environment(".", os.Environ())
+	env, err := environment(root, baseEnv)
 	if err != nil {
+		if jsonOutput {
+			return writeDoctorFailure(output, doctorDiagnostic{
+				Code:        "environment_file.invalid",
+				Severity:    "error",
+				Summary:     "Development environment files could not be loaded.",
+				Remediation: "Check .env.development and .env.local for valid KEY=VALUE lines.",
+			})
+		}
 		return err
 	}
 	cfg, err := config.LoadWithLookup(lookupIn(env))
 	if err != nil {
+		if jsonOutput {
+			return writeDoctorFailure(output, doctorDiagnostic{
+				Code:        "configuration.invalid",
+				Severity:    "error",
+				Summary:     "Forge configuration is invalid.",
+				Remediation: "Review FORGE_* settings against the configuration guide; secret values are intentionally omitted.",
+			})
+		}
 		return fmt.Errorf("configuration invalid: %w", err)
 	}
 	database := "not configured"
 	if !cfg.Database.URL.IsZero() {
 		database = describeDatabase(cfg.Database.URL.Reveal())
 	}
+	if jsonOutput {
+		adapter := string(cfg.Database.Adapter())
+		if adapter == "" {
+			adapter = "none"
+		}
+		return json.NewEncoder(output).Encode(doctorReport{
+			SchemaVersion: 1,
+			OK:            true,
+			Environment:   string(cfg.Environment),
+			Database:      adapter,
+			Diagnostics:   []doctorDiagnostic{},
+		})
+	}
 	_, err = fmt.Fprintf(output, "configuration: ok\nenvironment: %s\nhttp address: %s\ntransport: %s\ndatabase: %s\n",
 		cfg.Environment, cfg.HTTP.Address, cfg.HTTP.Transport, database)
 	return err
+}
+
+func writeDoctorFailure(output io.Writer, diagnostic doctorDiagnostic) error {
+	if err := json.NewEncoder(output).Encode(doctorReport{
+		SchemaVersion: 1,
+		OK:            false,
+		Diagnostics:   []doctorDiagnostic{diagnostic},
+	}); err != nil {
+		return err
+	}
+	return errDoctorUnhealthy
 }
 
 // describeDatabase prints only scheme, user, host, database or file, and
@@ -147,7 +264,7 @@ func lookupIn(env []string) func(string) (string, bool) {
 }
 
 func usage(output io.Writer) {
-	fmt.Fprint(output, `usage: forge <command> [arguments]
+	fmt.Fprint(output, `usage: forge [--error-format=json] <command> [arguments]
 
 commands:
   new NAME            generate an application with Dockerfile, compose and CI;
@@ -157,10 +274,15 @@ commands:
   build               compile the application into bin/
   migrate [status]    apply pending migrations, or list them
   rollback [-steps N] revert the latest migrations
-  generate migration NAME
-                      create db/migrations/<timestamp>_NAME.{up,down}.sql
-  doctor              validate the FORGE_* configuration
+  generate migration NAME [--dry-run]
+                      create or preview db/migrations/<timestamp>_NAME.{up,down}.sql
+  generate view NAME [--dry-run]
+                      create or preview an embedded, auto-escaped HTML template
+  doctor [--json]     validate the FORGE_* configuration
+  inspect --json      inspect app structure without executing it
+  help --json         print the versioned machine-readable command catalog
   uuid [--count N]    generate UUIDv7 identifiers
   version             print the Forge version
+  --error-format=json  emit versioned, secret-safe errors on stderr
 `)
 }
