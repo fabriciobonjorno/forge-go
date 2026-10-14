@@ -435,7 +435,7 @@ func concurrentWorkers(t *testing.T, newStore NewStore) {
 		ids = append(ids, e.enqueue("stress", Message{ID: i}))
 	}
 	for range 4 {
-		e.start(e.worker(queue.WorkerOptions{Queues: []queue.QueueConfig{{Name: queue.DefaultQueue, Concurrency: 4}}}))
+		e.start(e.worker(queue.WorkerOptions{Lease: 30 * time.Second, Queues: []queue.QueueConfig{{Name: queue.DefaultQueue, Concurrency: 4}}}))
 	}
 	waitFor(t, 60*time.Second, "all stress jobs", func() bool { return finished.Load() >= jobs })
 	for _, id := range ids {
@@ -481,7 +481,7 @@ func leaseExpiryFencing(t *testing.T, newStore NewStore) {
 	ctx := context.Background()
 	id := insertK(t, store, 5)
 
-	stale := claimOne(t, store, "worker-a", 150*time.Millisecond)
+	stale := claimOne(t, store, "worker-a", 2*time.Second)
 	if stale.Job.Attempt != 1 {
 		t.Fatalf("first claim attempt = %d", stale.Job.Attempt)
 	}
@@ -489,10 +489,10 @@ func leaseExpiryFencing(t *testing.T, newStore NewStore) {
 		t.Fatalf("Claim while leased = %v, %v; want none", ok, err)
 	}
 	// A live lease is renewable.
-	if err := store.Renew(ctx, stale.Lease, 150*time.Millisecond); err != nil {
+	if err := store.Renew(ctx, stale.Lease, 2*time.Second); err != nil {
 		t.Fatalf("Renew live lease: %v", err)
 	}
-	time.Sleep(600 * time.Millisecond) // the lease expires
+	time.Sleep(2600 * time.Millisecond) // the lease expires
 
 	fresh := claimOne(t, store, "worker-b", time.Minute)
 	if fresh.Job.ID != id || fresh.Job.Attempt != 2 {
@@ -608,7 +608,7 @@ func workerLosesLease(t *testing.T, newStore NewStore) {
 	}
 
 	// A healthy worker reclaims and finishes the job.
-	e.start(e.worker(queue.WorkerOptions{Lease: 300 * time.Millisecond}))
+	e.start(e.worker(queue.WorkerOptions{Lease: 20 * time.Second}))
 	info := e.waitState(id, queue.StateSucceeded)
 	if info.Job.Attempt != 2 {
 		t.Fatalf("job finished on attempt %d, want 2", info.Job.Attempt)
@@ -965,7 +965,7 @@ func queueConcurrency(t *testing.T, newStore NewStore) {
 	e := newEnv(t, newStore)
 	type gauge struct{ now, max atomic.Int32 }
 	gauges := map[string]*gauge{"alpha": {}, "beta": {}}
-	handler := func(name string) func(context.Context, Message) error {
+	handler := func(name string, bound int32) func(context.Context, Message) error {
 		g := gauges[name]
 		return func(context.Context, Message) error {
 			n := g.now.Add(1)
@@ -975,13 +975,18 @@ func queueConcurrency(t *testing.T, newStore NewStore) {
 					break
 				}
 			}
-			time.Sleep(200 * time.Millisecond)
+			// Hold the slot until the queue is saturated, so the peak reaches
+			// the bound however slow the machine or the database is.
+			for deadline := time.Now().Add(10 * time.Second); g.now.Load() < bound && time.Now().Before(deadline); {
+				time.Sleep(5 * time.Millisecond)
+			}
+			time.Sleep(20 * time.Millisecond)
 			g.now.Add(-1)
 			return nil
 		}
 	}
-	e.register("on.alpha", handler("alpha"), queue.HandlerQueue("alpha"))
-	e.register("on.beta", handler("beta"), queue.HandlerQueue("beta"))
+	e.register("on.alpha", handler("alpha", 3), queue.HandlerQueue("alpha"))
+	e.register("on.beta", handler("beta", 1), queue.HandlerQueue("beta"))
 	var ids []uuid.UUID
 	for i := range 6 {
 		ids = append(ids, e.enqueue("on.alpha", Message{ID: i}), e.enqueue("on.beta", Message{ID: i}))
