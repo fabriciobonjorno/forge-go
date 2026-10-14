@@ -539,6 +539,9 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 		if i == 0 {
 			guard = parts.Guard
 		}
+		if parts.PlatformGuard != "" && !strings.Contains(guard, "protectPlatformWrite :=") {
+			guard += "\n" + parts.PlatformGuard
+		}
 		for _, importPath := range parts.Imports {
 			if !strings.Contains(source, `"`+importPath+`"`) && !strings.Contains(imports.String(), `"`+importPath+`"`) {
 				imports.WriteString("\t\"" + importPath + "\"\n")

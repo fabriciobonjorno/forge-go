@@ -218,7 +218,7 @@ func TestGenerateResourceDryRunWritesNothing(t *testing.T) {
 		"would create  " + filepath.Join("app", "application", "product.go"),
 		"would create  " + filepath.Join("app", "adapters", "persistence", "product_test.go"),
 		"would create  " + filepath.Join("app", "adapters", "httpapi", "product.go"),
-		"auth.Require",
+		"auth.RequireAudited(required, next, repository)",
 		"httpapi.RegisterProducts(app, productService, protect)",
 	} {
 		if !strings.Contains(output, want) {
@@ -586,7 +586,7 @@ func TestResourceWiringNeverOpensTheRoutes(t *testing.T) {
 		if strings.Contains(wiring, "return next, nil") {
 			t.Errorf("%+v: the wiring passes requests through:\n%s", test, wiring)
 		}
-		if test.identity != strings.Contains(wiring, "auth.Require") {
+		if test.identity != strings.Contains(wiring, "auth.RequireAudited(required, next, repository)") {
 			t.Errorf("%+v: auth.Require presence does not follow Forge identity:\n%s", test, wiring)
 		}
 		if !strings.Contains(wiring, "httpapi.RegisterProducts(app, productService, protect)") {
@@ -667,5 +667,37 @@ func TestResourceVersionColumnIsWide(t *testing.T) {
 		if !pattern.MatchString(rendered.migrationUp) {
 			t.Errorf("%s: the version column is not 64-bit:\n%s", database, rendered.migrationUp)
 		}
+	}
+}
+
+// Roles are per tenant, so a tenant administrator can grant itself any
+// permission: writes to global rows must not be guarded by a role alone.
+func TestGlobalResourceWritesStayClosedInIdentityApplications(t *testing.T) {
+	t.Parallel()
+	identity := resourceSpec{
+		resourceRequest: resourceRequest{Name: "category", Plural: "categories"},
+		Module:          "example.com/shop", Database: "postgres", Identity: true,
+	}
+	wiring := resourceWiring(identity)
+	for _, want := range []string{
+		"protectPlatformWrite := func(",
+		`permission == "categories:write"`,
+		"return protectPlatformWrite(permission, next)",
+		"return protect(permission, next)",
+		"auth.ErrPermissionDenied",
+	} {
+		if !strings.Contains(wiring, want) {
+			t.Errorf("global wiring is missing %q:\n%s", want, wiring)
+		}
+	}
+	// Tenant-scoped resources are written by their own tenant's roles.
+	identity.TenantScoped = true
+	if wiring := resourceWiring(identity); strings.Contains(wiring, "protectPlatformWrite") {
+		t.Errorf("a tenant-scoped resource needs no platform guard:\n%s", wiring)
+	}
+	// Applications without identity already get a deny-all guard for everything.
+	identity.TenantScoped, identity.Identity, identity.Database = false, false, "mysql"
+	if wiring := resourceWiring(identity); strings.Contains(wiring, "protectPlatformWrite") || !strings.Contains(wiring, "no Forge identity") {
+		t.Errorf("unexpected wiring without identity:\n%s", wiring)
 	}
 }

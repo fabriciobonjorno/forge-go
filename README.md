@@ -259,7 +259,10 @@ The generator refuses to overwrite any file and never edits
 `RegisterProducts` needs a `protect` function and asks it for `products:read` or
 `products:write` per route, so the endpoints are never public by accident. On
 PostgreSQL (Forge identity) the migration adds those permissions to
-`forge_permissions` and the wiring uses `auth.Require`; on other databases the
+`forge_permissions` and the wiring uses `auth.RequireAudited`; a global resource's
+write routes additionally stay behind a deny-all `protectPlatformWrite` you replace
+with operator-level authorization (tenant roles must not be able to change rows every
+tenant reads); on other databases the
 printed guard denies every request until you replace it with your own
 authentication and authorization. The generated integration tests need the test
 database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead

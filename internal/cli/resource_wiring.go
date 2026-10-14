@@ -12,8 +12,11 @@ type resourceWiringParts struct {
 	Imports []string // import paths, unquoted
 	Where   string   // human-readable insertion point
 	Guard   string   // the protect function, defined once per application
-	Usage   string   // wires this resource
-	Notes   []string
+	// PlatformGuard is the deny-all guard for writes to global resources in
+	// applications with Forge identity; empty otherwise. Defined once.
+	PlatformGuard string
+	Usage         string // wires this resource
+	Notes         []string
 }
 
 func buildResourceWiring(spec resourceSpec) resourceWiringParts {
@@ -43,7 +46,7 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.Require(required, next)
+		guarded, err := auth.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -52,6 +55,35 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 `
 		parts.Notes = []string{
 			fmt.Sprintf("The migration registers the permissions %s:read and %s:write; grant them to a role before callers can use the routes.", spec.Plural, spec.Plural),
+		}
+		if !spec.TenantScoped {
+			// Roles belong to tenants, so a tenant administrator can grant
+			// itself any permission. Writes to rows every tenant reads need
+			// authorization above the tenant.
+			parts.PlatformGuard = `	// Global rows are read by every tenant, but roles are per tenant: a tenant
+	// administrator could grant itself the write permission and change data
+	// that every other tenant sees. Writes therefore stay closed until you
+	// implement platform-level (operator) authorization here.
+	protectPlatformWrite := func(_ string, _ http.Handler) (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, auth.ErrPermissionDenied)
+		}), nil
+	}
+`
+			parts.Usage = fmt.Sprintf(`	%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)
+	if err != nil {
+		return err
+	}
+	if err := httpapi.Register%[3]s(app, %[1]sService, func(permission string, next http.Handler) (http.Handler, error) {
+		if permission == %[4]q {
+			return protectPlatformWrite(permission, next)
+		}
+		return protect(permission, next)
+	}); err != nil {
+		return err
+	}
+`, lowerCamel(spec.Name), title, plural, spec.Plural+":write")
+			parts.Notes = append(parts.Notes, fmt.Sprintf("%s is global: its read route uses %s:read, but its write routes stay denied until protectPlatformWrite authorizes platform operators.", spec.Plural, spec.Plural))
 		}
 		return parts
 	}
@@ -72,7 +104,7 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 	}
 `, spec.Plural+":read", spec.Plural+":write", tenantNote)
 	parts.Notes = []string{
-		"This application has no Forge identity (it is not PostgreSQL), so the guard is yours to write; the generator never opens the routes to the public.",
+		"This application has no Forge identity, so the guard is yours to write; the generator never opens the routes to the public.",
 	}
 	return parts
 }
@@ -88,6 +120,9 @@ func resourceWiring(spec resourceSpec) string {
 		fmt.Fprintf(&out, "\t%q\n", path)
 	}
 	fmt.Fprintf(&out, "\n  2. Once per application, %s, define the guard:\n\n%s", parts.Where, parts.Guard)
+	if parts.PlatformGuard != "" {
+		fmt.Fprintf(&out, "\n  This resource is global, so also define (once) the guard for its writes:\n\n%s", parts.PlatformGuard)
+	}
 	fmt.Fprintf(&out, "\n  3. For this resource, right after it:\n\n%s", parts.Usage)
 	for _, note := range parts.Notes {
 		fmt.Fprintf(&out, "\n  %s\n", note)

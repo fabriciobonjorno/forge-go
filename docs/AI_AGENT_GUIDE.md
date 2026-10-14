@@ -41,7 +41,11 @@ Quote an optional field (`'summary:text?'`) so the shell does not expand the
 `?`. The generator never edits `app/bootstrap/bootstrap.go` and never opens
 routes to the public: the printed `protect` function must be wired (PostgreSQL
 applications use Forge identity; other databases need an application-written
-guard) before the endpoints answer anything but `403`.
+guard) before the endpoints answer anything but `403`. For a `--global` resource
+in a PostgreSQL application the write routes stay behind a separate deny-all
+`protectPlatformWrite`: tenant roles can grant themselves permissions, so
+writes to rows every tenant reads need operator-level authorization that only
+the application can implement.
 
 Review the proposed paths and content with the user before invoking a
 write-producing generator. `--dry-run` is a preview, not an authorization

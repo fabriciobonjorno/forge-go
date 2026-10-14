@@ -453,8 +453,10 @@ already declared there. Rules the generated code follows:
 - **No public routes.** `Register<Plural>` returns an error without a
   `protect` function and asks it for `<plural>:read` or `<plural>:write` per
   route. With Forge identity (PostgreSQL) the migration seeds those
-  permissions and the printed wiring uses `auth.Require` behind the
-  authentication middleware; elsewhere the printed guard denies every request
+  permissions and the printed wiring uses `auth.RequireAudited` behind the
+  authentication middleware (writes to a global resource additionally stay
+  behind a deny-all `protectPlatformWrite`, since tenant roles cannot
+  authorize changes to rows every tenant reads); elsewhere the printed guard denies every request
   until the application implements it.
 - **Optimistic locking and keyset pagination.** `PATCH` and `DELETE` carry the
   version the client read and answer `409` when it is stale; lists are

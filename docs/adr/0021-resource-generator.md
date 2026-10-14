@@ -51,9 +51,14 @@ Rules:
    function that wraps each handler with its permission
    (`<plural>:read` for reads, `<plural>:write` for writes). In applications
    with Forge identity (PostgreSQL) the migration inserts those permissions
-   into `forge_permissions` and the wiring snippet uses `auth.Require` behind
-   the authentication middleware; elsewhere the application supplies its own
-   guard explicitly.
+   into `forge_permissions` and the wiring snippet uses `auth.RequireAudited`
+   behind the authentication middleware, so denials are audited like other
+   security events; elsewhere the application supplies its own guard
+   explicitly. Roles belong to tenants, so a tenant administrator can grant
+   itself any permission: for a `--global` resource in an application with
+   Forge identity the snippet keeps reads behind `<plural>:read` but routes
+   writes through a separate deny-all `protectPlatformWrite` that the
+   application replaces with platform-level (operator) authorization.
 4. **Optimistic locking and keyset pagination by default.** Rows carry
    `version`, `created_at`, `updated_at` (UTC); updates and deletes require
    the version the client read (stale → `409`); lists are newest-first keyset
