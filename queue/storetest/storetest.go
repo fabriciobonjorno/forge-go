@@ -365,7 +365,7 @@ func scheduledRunAt(t *testing.T, newStore NewStore) {
 	e := newEnv(t, newStore)
 	ran := make(chan time.Time, 2)
 	e.register("later", func(context.Context, Message) error { ran <- time.Now(); return nil })
-	scheduled := time.Now().Add(700 * time.Millisecond)
+	scheduled := time.Now().Add(4 * time.Second)
 	id := e.enqueue("later", Message{ID: 1}, queue.RunAt(scheduled))
 	immediate := e.enqueue("later", Message{ID: 2})
 	e.start(e.worker(queue.WorkerOptions{}))
