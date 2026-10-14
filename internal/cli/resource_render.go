@@ -50,6 +50,7 @@ type resourceView struct {
 	HasTime      bool
 	HasOptional  bool
 	HasValidated bool
+	UsesStrings  bool // the domain calls strings.TrimSpace
 }
 
 type fieldView struct {
@@ -118,6 +119,7 @@ func newResourceView(spec resourceSpec) resourceView {
 		view.HasTime = view.HasTime || field.Type == "time"
 		view.HasOptional = view.HasOptional || field.Optional
 		view.HasValidated = view.HasValidated || item.Validated()
+		view.UsesStrings = view.UsesStrings || field.Type == "string" || (field.Type == "text" && !field.Optional)
 	}
 	view.HasText = view.HasString || view.HasTextType
 	view.SQL = buildStatements(view)
@@ -351,6 +353,17 @@ func (v resourceView) FirstRequired() *fieldView {
 	for _, f := range v.Fields {
 		if !f.Optional {
 			return &f
+		}
+	}
+	return nil
+}
+
+// FirstSimpleInvalid is the first invalid value that needs no imports beyond
+// the ones every test file has, or nil.
+func (v resourceView) FirstSimpleInvalid() *invalidCase {
+	for _, c := range v.InvalidCases() {
+		if !strings.Contains(c.Expr, "strings.") {
+			return &c
 		}
 	}
 	return nil

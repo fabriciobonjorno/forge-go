@@ -179,8 +179,8 @@ func Test[[.Title]]ServiceCreate(t *testing.T) {
 func Test[[.Title]]ServiceCreateRejectsInvalidInputAndStoresNothing(t *testing.T) {
 	t.Parallel()
 	f := new[[.Title]]Fixture(t)
-[[- if .InvalidCases]]
-[[- with index .InvalidCases 0]]
+[[- if .FirstSimpleInvalid]]
+[[- with .FirstSimpleInvalid]]
 	input := domain.[[$.Title]]Input{
 		[[$.SampleInput 1 true]]
 	}

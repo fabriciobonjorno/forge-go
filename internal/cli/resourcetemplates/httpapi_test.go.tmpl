@@ -292,7 +292,6 @@ func Test[[.Title]]Lifecycle(t *testing.T) {
 	if patched["updated_at"] == created["updated_at"] {
 		t.Errorf("updated_at did not move: %v", patched["updated_at"])
 	}
-	current := patched
 [[- if .HasOptional]]
 
 	// null clears an optional field.
@@ -304,7 +303,7 @@ func Test[[.Title]]Lifecycle(t *testing.T) {
 	}
 	recorder = [[.Name]]Send(t, handler, http.MethodPatch, location, nulls)
 	[[.Name]]Expect(t, recorder, http.StatusOK)
-	current = [[.Name]]Decode(t, recorder)
+	current := [[.Name]]Decode(t, recorder)
 [[- range .OptionalFields]]
 	if value, present := current["[[.Name]]"]; !present || value != nil {
 		t.Errorf("[[.Name]] = %v after null, want null", value)
@@ -313,6 +312,8 @@ func Test[[.Title]]Lifecycle(t *testing.T) {
 	if [[.Name]]Version(t, current) != 3 {
 		t.Errorf("version = %d after the second update, want 3", [[.Name]]Version(t, current))
 	}
+[[- else]]
+	current := patched
 [[- end]]
 [[- with .FirstRequired]]
 

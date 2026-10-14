@@ -112,6 +112,7 @@ func [[.Name]]JSON(t *testing.T, entity domain.[[.Title]]) string {
 	return string(encoded)
 }
 
+[[- if .Tenant]]
 func [[.Name]]IDs(t *testing.T, ctx context.Context, repo *persistence.[[.Title]]Repository) []uuid.UUID {
 	t.Helper()
 	rows, err := repo.List(ctx, uuid.UUID{}, 100)
@@ -124,6 +125,7 @@ func [[.Name]]IDs(t *testing.T, ctx context.Context, repo *persistence.[[.Title]
 	}
 	return ids
 }
+[[- end]]
 
 func Test[[.Title]]RepositoryCreateAndGet(t *testing.T) {
 	repo, _ := new[[.Title]]Repository(t)
