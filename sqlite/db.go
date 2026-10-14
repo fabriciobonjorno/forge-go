@@ -114,12 +114,14 @@ func createFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve database path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), dirPermissions); err != nil {
+	// The path is the operator-configured database file (FORGE_DATABASE_URL),
+	// never request input.
+	if err := os.MkdirAll(filepath.Dir(path), dirPermissions); err != nil { // #nosec G703 -- operator-configured path, see above
 		return "", fmt.Errorf("create database directory: %w", err)
 	}
 	// An empty file is a valid empty database. O_EXCL leaves an existing
 	// database untouched.
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, filePermissions) // #nosec G304 -- the path is the operator-configured database file
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, filePermissions) // #nosec G304 G703 -- the path is the operator-configured database file
 	switch {
 	case err == nil:
 		if err := file.Close(); err != nil {
