@@ -14,6 +14,7 @@ package mail
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/fabriciobonjorno/forge-go/fault"
 )
@@ -41,7 +42,10 @@ var (
 	ErrUnavailable = &fault.Error{Code: "mail_unavailable", Message: "mail delivery is temporarily unavailable", Category: fault.CategoryUnavailable, Retryable: true}
 	// ErrRejected is a permanent refusal by the server (5xx reply, refused
 	// recipient). Retrying the same message will not help.
-	ErrRejected = fault.New("mail_rejected", "mail server rejected the message", fault.CategoryInvalid, 0)
+	//
+	// It is a failure of the upstream mail system, not of the caller's HTTP
+	// request, so it maps to 502 rather than 400.
+	ErrRejected = fault.New("mail_rejected", "mail server rejected the message", fault.CategoryUnavailable, http.StatusBadGateway)
 	// ErrAuthFailed means the SMTP credentials were refused or no safe
 	// authentication mechanism is available.
 	ErrAuthFailed = fault.New("mail_auth_failed", "mail server authentication failed", fault.CategoryInternal, 0)

@@ -359,7 +359,9 @@ func (s *SMTPSender) classify(ctx context.Context, stage string, err error) erro
 func (s *SMTPSender) fromReply(stage string, reply *textproto.Error) error {
 	cause := fmt.Errorf("smtp %s: reply %d", stage, reply.Code)
 	switch {
-	case stage == "auth" && (reply.Code == 530 || reply.Code == 534 || reply.Code == 535 || reply.Code == 538):
+	case reply.Code == 530 || reply.Code == 535 || (stage == "auth" && (reply.Code == 534 || reply.Code == 538)):
+		// 530 (authentication required) and 535 (credentials refused) can be
+		// returned by servers at any command, not only during AUTH.
 		return withFault(ErrAuthFailed, stage, reply.Code, cause)
 	case reply.Code >= 400 && reply.Code < 500:
 		return transient(stage, reply.Code, cause)
