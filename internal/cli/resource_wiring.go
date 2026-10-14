@@ -27,14 +27,14 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 			spec.Module + "/app/application",
 			"github.com/fabriciobonjorno/forge-go/uuid",
 		},
-		Usage: fmt.Sprintf(`	%[1]s, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)
+		Usage: fmt.Sprintf(`	%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)
 	if err != nil {
 		return err
 	}
-	if err := httpapi.Register%[3]s(app, %[1]s, protect); err != nil {
+	if err := httpapi.Register%[3]s(app, %[1]sService, protect); err != nil {
 		return err
 	}
-`, spec.Plural, title, plural),
+`, lowerCamel(spec.Name), title, plural),
 	}
 	if spec.Identity {
 		parts.Where = "inside identityRoutes, after the `middleware, err := auth.NewMiddleware(repository)` statement and its error check"
@@ -94,4 +94,12 @@ func resourceWiring(spec resourceSpec) string {
 	}
 	fmt.Fprintf(&out, "\n  Then: forge migrate && forge test\n")
 	return out.String()
+}
+
+// lowerCamel converts snake_case to a lower-camel Go identifier
+// (order_item becomes orderItem).
+func lowerCamel(name string) string {
+	title := exportedName(name)
+	first := strings.SplitN(name, "_", 2)[0]
+	return strings.ToLower(first) + title[len(first):]
 }

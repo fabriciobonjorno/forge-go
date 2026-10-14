@@ -40,6 +40,8 @@ func matrixResources() [][]string {
 	return append(resources,
 		// Optional-only text was the field set that once imported an unused package.
 		[]string{"memo", "body:text?", "--global"},
+		// Field names that look like Go identifiers used by the generated code.
+		[]string{"edge_go", "err:string", "ctx:int", "t:bool", "entity:time?", "input:uuid", "repository:text", "--tenant-scoped"},
 		[]string{"all_optional", "a:string?", "b:text?", "c:int?", "d:bool?", "e:time?", "f:uuid?", "--tenant-scoped"},
 	)
 }

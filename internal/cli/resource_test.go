@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"go/ast"
 	"go/format"
 	"go/parser"
 	"go/token"
@@ -101,6 +102,13 @@ func TestParseResourceArgs(t *testing.T) {
 		{"duplicate field", []string{"product", "name:string", "name:text", "--global"}, "declared twice"},
 		{"go name collision", []string{"product", "i_d:int", "--global"}, "collides"},
 		{"clear flag collision", []string{"product", "note:text?", "clear_note:bool", "--global"}, "Clear"},
+		{"apply collides with a method", []string{"product", "apply:bool", "--global"}, "collides"},
+		{"is_empty collides with a method", []string{"product", "is_empty:bool", "--global"}, "collides"},
+		{"version collides", []string{"product", "id:int", "--global"}, "reserved"},
+		{"go keyword name", []string{"type", "name:string", "--global"}, "Go keyword"},
+		{"predeclared name", []string{"error", "name:string", "--global"}, "Go keyword"},
+		{"imported package name", []string{"time", "name:string", "--global"}, "Go keyword"},
+		{"imported package plural", []string{"thing", "name:string", "--global", "--plural", "errors"}, "Go keyword"},
 		{"identifier too long", []string{strings.Repeat("a", 38), strings.Repeat("b", 38) + ":string", "--global"}, "too long"},
 	}
 	for _, test := range invalid {
@@ -207,7 +215,7 @@ func TestGenerateResourceDryRunWritesNothing(t *testing.T) {
 		"would create  " + filepath.Join("app", "adapters", "persistence", "product_test.go"),
 		"would create  " + filepath.Join("app", "adapters", "httpapi", "product.go"),
 		"auth.Require",
-		"httpapi.RegisterProducts(app, products, protect)",
+		"httpapi.RegisterProducts(app, productService, protect)",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("dry-run output is missing %q:\n%s", want, output)
@@ -577,8 +585,59 @@ func TestResourceWiringNeverOpensTheRoutes(t *testing.T) {
 		if test.identity != strings.Contains(wiring, "auth.Require") {
 			t.Errorf("%+v: auth.Require presence does not follow Forge identity:\n%s", test, wiring)
 		}
-		if !strings.Contains(wiring, "httpapi.RegisterProducts(app, products, protect)") {
+		if !strings.Contains(wiring, "httpapi.RegisterProducts(app, productService, protect)") {
 			t.Errorf("%+v: wiring does not register the routes with a guard:\n%s", test, wiring)
+		}
+	}
+}
+
+// TestReservedGoMembersCoverEveryGeneratedMethod derives the methods of the
+// generated entity types from the rendered code and fails when one is missing
+// from the list that field names are checked against.
+func TestReservedGoMembersCoverEveryGeneratedMethod(t *testing.T) {
+	t.Parallel()
+	rendered, err := renderResource(resourceSpec{
+		resourceRequest: resourceRequest{Name: "product", Plural: "products", Fields: allTypes, TenantScoped: true},
+		Module:          "example.com/shop", Database: "postgres", Identity: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	checked := 0
+	for _, source := range rendered.sources {
+		if source.dir != "app/domain" || source.suffix != ".go" {
+			continue
+		}
+		file, err := parser.ParseFile(fset, "product.go", source.content, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, declaration := range file.Decls {
+			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv != nil {
+				checked++
+				if !slices.Contains(reservedGoMembers, function.Name.Name) {
+					t.Errorf("method %s of a generated type is not in reservedGoMembers", function.Name.Name)
+				}
+			}
+		}
+		// The entity's own fields are reserved too.
+		for _, name := range []string{"ID", "Version", "CreatedAt", "UpdatedAt"} {
+			if !strings.Contains(source.content, "\t"+name+" ") {
+				t.Errorf("the domain no longer declares %s; update reservedGoMembers", name)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no generated methods found")
+	}
+}
+
+func TestLowerCamel(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]string{"product": "product", "order_item": "orderItem", "api_key": "apiKey", "id_card": "idCard"} {
+		if got := lowerCamel(name); got != want {
+			t.Errorf("lowerCamel(%q) = %q, want %q", name, got, want)
 		}
 	}
 }

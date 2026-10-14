@@ -73,6 +73,26 @@ var reservedSQLWords = strings.Fields(`
 	utc_timestamp values varbinary varchar varcharacter varying verbose virtual when where while window with write xor
 	year_month zerofill`)
 
+// reservedGoMembers are the exported fields and methods of the generated
+// entity and changes types (ID, Version, CreatedAt, UpdatedAt, Apply and
+// IsEmpty); a user field that exports to one of them would not compile. A
+// test derives the methods from the rendered code, so the list cannot drift
+// from the templates.
+var reservedGoMembers = []string{"ID", "Version", "CreatedAt", "UpdatedAt", "Apply", "IsEmpty"}
+
+// goReservedNames are Go keywords, predeclared identifiers and the packages
+// the generated files import. Generated code never uses a resource name or
+// plural as a bare identifier, but rejecting them keeps the output readable
+// and safe against future templates.
+var goReservedNames = strings.Fields(`
+	break case chan const continue default defer else fallthrough for func go goto if import interface map package
+	range return select struct switch type var
+	any bool byte comparable complex128 complex64 error float32 float64 int int16 int32 int64 int8 rune string uint
+	uint16 uint32 uint64 uint8 uintptr true false iota nil append cap clear close complex copy delete imag len make max
+	min new panic print println real recover
+	bytes cmp context errors fmt http json maps reflect slices sql strconv strings sync testing time
+	application domain httpapi persistence db fault forge pagination pgx postgres mysql sqlite sqldb tenancy uuid web`)
+
 // resourceRequest is a syntactically and semantically valid command line.
 type resourceRequest struct {
 	Name         string
@@ -190,7 +210,10 @@ func parseResourceArgs(args []string) (resourceRequest, error) {
 		return resourceRequest{}, fmt.Errorf("a resource has at most %d fields", maxResourceFields)
 	}
 	seen := make(map[string]bool)
-	seenGo := map[string]bool{"ID": true, "Version": true, "CreatedAt": true, "UpdatedAt": true}
+	seenGo := make(map[string]bool, len(reservedGoMembers))
+	for _, member := range reservedGoMembers {
+		seenGo[member] = true
+	}
 	for _, declaration := range positional[1:] {
 		field, err := parseResourceField(declaration)
 		if err != nil {
@@ -222,6 +245,8 @@ func validateResourceName(name string) error {
 	switch {
 	case len(name) > maxResourceNameLength || !resourceName.MatchString(name):
 		return fmt.Errorf("resource name %q must be singular snake_case (lowercase letters and digits, words separated by single underscores, starting with a letter, at most %d characters)", name, maxResourceNameLength)
+	case slices.Contains(goReservedNames, name):
+		return fmt.Errorf("resource name %q is a Go keyword, predeclared identifier or a package the generated code imports; choose another name", name)
 	case hasFileNameSuffix(name):
 		return fmt.Errorf("resource name %q ends in a word Go treats as a file-name build constraint (such as _test or _linux); choose another name", name)
 	}
@@ -236,6 +261,8 @@ func validateResourcePlural(name, plural string, explicit bool) error {
 	switch {
 	case len(plural) > maxResourceNameLength || !resourceName.MatchString(plural):
 		return fmt.Errorf("plural %q must be snake_case with at most %d characters%s", plural, maxResourceNameLength, hint)
+	case slices.Contains(goReservedNames, plural):
+		return fmt.Errorf("plural %q is a Go keyword, predeclared identifier or a package the generated code imports; pass another --plural", plural)
 	case plural == name:
 		return fmt.Errorf("plural %q must differ from the resource name; pass --plural", plural)
 	case hasFileNameSuffix(plural):
