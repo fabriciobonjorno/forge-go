@@ -233,15 +233,41 @@ func (s *Store) Recover(ctx context.Context) (int64, error) {
 	s.lastReap.Store(time.Now().UnixNano())
 	var changed int64
 	err := s.db.InTxWith(ctx, sqldb.TxOptions{Isolation: sql.LevelReadCommitted, Attempts: claimAttempts}, func(tx *sql.Tx) error {
+		changed = 0
+		// Lock only the expired rows, skipping any a heartbeat holds, and
+		// then update exactly those: an UPDATE with the range predicate would
+		// queue behind the lock on a neighbouring live job's index entry.
+		rows, err := tx.QueryContext(ctx, `
+			SELECT id FROM forge_jobs
+			WHERE state = 'running' AND lease_until <= UTC_TIMESTAMP(6)
+			ORDER BY lease_until
+			LIMIT 100
+			FOR UPDATE SKIP LOCKED`)
+		if err != nil {
+			return err
+		}
+		var ids []any
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
 		result, err := tx.ExecContext(ctx, `
 			UPDATE forge_jobs
 			SET state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
 			    finished_at = CASE WHEN attempts >= max_attempts THEN UTC_TIMESTAMP(6) END,
 			    lease_token = NULL, lease_until = NULL, locked_by = NULL,
 			    last_error = 'lease expired: the worker stopped renewing it'
-			WHERE state = 'running' AND lease_until <= UTC_TIMESTAMP(6)
-			ORDER BY lease_until
-			LIMIT 100`)
+			WHERE id IN `+inClause(len(ids)), ids...)
 		if err != nil {
 			return err
 		}

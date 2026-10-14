@@ -1116,10 +1116,10 @@ func recoverRequeues(t *testing.T, newStore NewStore) {
 	expiring := insertK(t, store, 3)
 	exhausted := insertK(t, store, 1)
 	live := insertK(t, store, 3)
-	first := claimOne(t, store, "a", 100*time.Millisecond)
-	second := claimOne(t, store, "a", 100*time.Millisecond)
+	first := claimOne(t, store, "a", 1500*time.Millisecond)
+	second := claimOne(t, store, "a", 1500*time.Millisecond)
 	third := claimOne(t, store, "b", time.Hour)
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(2500 * time.Millisecond)
 
 	n, err := store.Recover(ctx)
 	if err != nil || n != 2 {

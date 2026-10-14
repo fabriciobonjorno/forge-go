@@ -75,7 +75,7 @@ func TestRecoverDoesNotWaitForTheLocksOfLiveJobs(t *testing.T) {
 	}
 	insert()
 	insert()
-	short, ok, err := store.Claim(ctx, queue.ClaimRequest{Queue: "default", Kinds: []string{"k"}, WorkerID: "a", Lease: 50 * time.Millisecond})
+	short, ok, err := store.Claim(ctx, queue.ClaimRequest{Queue: "default", Kinds: []string{"k"}, WorkerID: "a", Lease: 1500 * time.Millisecond})
 	if err != nil || !ok {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
@@ -83,7 +83,7 @@ func TestRecoverDoesNotWaitForTheLocksOfLiveJobs(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
-	time.Sleep(200 * time.Millisecond) // the first lease expires
+	time.Sleep(2200 * time.Millisecond) // the first lease expires
 
 	// A heartbeat in flight: the live job's lease_until index entry is locked
 	// by an uncommitted transaction.
