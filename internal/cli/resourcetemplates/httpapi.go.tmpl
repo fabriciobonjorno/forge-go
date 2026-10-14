@@ -77,7 +77,7 @@ type [[.Name]]Handlers struct {
 // silently becoming a zero value.
 type [[.Name]]CreateRequest struct {
 [[- range .Fields]]
-	[[.Title]] *[[.GoType]] `json:"[[.Name]]"`
+	[[.Title]] *[[.RequestType]] `json:"[[.Name]]"`
 [[- end]]
 }
 
@@ -85,16 +85,58 @@ func (b [[.Name]]CreateRequest) input() (domain.[[.Title]]Input, error) {
 	var input domain.[[.Title]]Input
 [[- range .Fields]]
 [[- if .Optional]]
+[[- if or .IsTime .IsUUID]]
+	if b.[[.Title]] != nil {
+		value, err := parse[[$.Title]][[if .IsTime]]Time[[else]]UUID[[end]](*b.[[.Title]], domain.[[.Err]])
+		if err != nil {
+			return domain.[[$.Title]]Input{}, err
+		}
+		input.[[.Title]] = &value
+	}
+[[- else]]
 	input.[[.Title]] = b.[[.Title]]
+[[- end]]
 [[- else]]
 	if b.[[.Title]] == nil {
 		return domain.[[$.Title]]Input{}, domain.[[.Err]]
 	}
+[[- if or .IsTime .IsUUID]]
+	{
+		value, err := parse[[$.Title]][[if .IsTime]]Time[[else]]UUID[[end]](*b.[[.Title]], domain.[[.Err]])
+		if err != nil {
+			return domain.[[$.Title]]Input{}, err
+		}
+		input.[[.Title]] = value
+	}
+[[- else]]
 	input.[[.Title]] = *b.[[.Title]]
+[[- end]]
 [[- end]]
 [[- end]]
 	return input, nil
 }
+[[- if .HasTime]]
+
+// parse[[.Title]]Time reads an RFC 3339 timestamp; anything else is invalid.
+func parse[[.Title]]Time(value string, invalid error) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, invalid
+	}
+	return parsed, nil
+}
+[[- end]]
+[[- if .HasUUID]]
+
+// parse[[.Title]]UUID reads a UUIDv7; anything else is invalid.
+func parse[[.Title]]UUID(value string, invalid error) (uuid.UUID, error) {
+	parsed, err := uuid.Parse(value)
+	if err != nil {
+		return uuid.UUID{}, invalid
+	}
+	return parsed, nil
+}
+[[- end]]
 
 // [[.Name]]PatchField records whether a JSON member was present and whether it
 // was null, which a plain pointer cannot tell apart from absent.
@@ -123,7 +165,7 @@ func (f *[[.Name]]PatchField[T]) UnmarshalJSON(data []byte) error {
 type [[.Name]]PatchRequest struct {
 	Version int `json:"version"`
 [[- range .Fields]]
-	[[.Title]] [[printf "%sPatchField[%s]" $.Name .GoType]] `json:"[[.Name]]"`
+	[[.Title]] [[printf "%sPatchField[%s]" $.Name .RequestType]] `json:"[[.Name]]"`
 [[- end]]
 }
 
@@ -135,13 +177,29 @@ func (b [[.Name]]PatchRequest) changes() (domain.[[.Title]]Changes, error) {
 		if b.[[.Title]].Value == nil {
 			changes.Clear[[.Title]] = true
 		} else {
+[[- if or .IsTime .IsUUID]]
+			value, err := parse[[$.Title]][[if .IsTime]]Time[[else]]UUID[[end]](*b.[[.Title]].Value, domain.[[.Err]])
+			if err != nil {
+				return domain.[[$.Title]]Changes{}, err
+			}
+			changes.[[.Title]] = &value
+[[- else]]
 			changes.[[.Title]] = b.[[.Title]].Value
+[[- end]]
 		}
 [[- else]]
 		if b.[[.Title]].Value == nil {
 			return domain.[[$.Title]]Changes{}, domain.[[.Err]]
 		}
+[[- if or .IsTime .IsUUID]]
+		value, err := parse[[$.Title]][[if .IsTime]]Time[[else]]UUID[[end]](*b.[[.Title]].Value, domain.[[.Err]])
+		if err != nil {
+			return domain.[[$.Title]]Changes{}, err
+		}
+		changes.[[.Title]] = &value
+[[- else]]
 		changes.[[.Title]] = b.[[.Title]].Value
+[[- end]]
 [[- end]]
 	}
 [[- end]]

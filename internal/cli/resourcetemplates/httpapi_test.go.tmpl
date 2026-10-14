@@ -441,6 +441,15 @@ func Test[[.Title]]Errors(t *testing.T) {
 	path := "/v1/[[.Plural]]/" + existing.ID.String()
 	missing := "/v1/[[.Plural]]/" + uuid.MustNew().String()
 	const uuidV4 = "550e8400-e29b-41d4-a716-446655440000"
+	createBody := func() [[.Name]]Body {
+		return [[.Name]]Body{
+			[[.SampleBody 1 true]]
+		}
+	}
+	withMember := func(body [[.Name]]Body, key string, value any) [[.Name]]Body {
+		body[key] = value
+		return body
+	}
 	// withVersion is an update body that changes the first field; version 0
 	// leaves the member out.
 	withVersion := func(version int) [[.Name]]Body {
@@ -474,6 +483,10 @@ func Test[[.Title]]Errors(t *testing.T) {
 [[- with .WrongType]]
 		{name: "wrong JSON type on create", method: http.MethodPost, target: "/v1/[[$.Plural]]", body: `{"[[.Field.Name]]":[[.Literal]]}`, status: 400, code: "invalid_json"},
 		{name: "wrong JSON type on update", method: http.MethodPatch, target: path, body: `{"version":1,"[[.Field.Name]]":[[.Literal]]}`, status: 400, code: "invalid_json"},
+[[- end]]
+[[- range $i, $bad := .BadValues]]
+		{name: "invalid [[$bad.Field.Name]] on create #[[$i]]", method: http.MethodPost, target: "/v1/[[$.Plural]]", body: withMember(createBody(), "[[$bad.Field.Name]]", [[$bad.Value]]), status: 400, code: "invalid_[[$.Name]]_[[$bad.Field.Name]]"},
+		{name: "invalid [[$bad.Field.Name]] on update #[[$i]]", method: http.MethodPatch, target: path, body: [[$.Name]]Body{"version": 1, "[[$bad.Field.Name]]": [[$bad.Value]]}, status: 400, code: "invalid_[[$.Name]]_[[$bad.Field.Name]]"},
 [[- end]]
 		{name: "invalid id", method: http.MethodGet, target: "/v1/[[.Plural]]/not-a-uuid", status: 400, code: "invalid_[[.Name]]_id"},
 		{name: "non-v7 id", method: http.MethodGet, target: "/v1/[[.Plural]]/" + uuidV4, status: 400, code: "invalid_[[.Name]]_id"},

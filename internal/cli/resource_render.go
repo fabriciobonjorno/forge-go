@@ -48,6 +48,7 @@ type resourceView struct {
 	HasString    bool
 	HasTextType  bool
 	HasTime      bool
+	HasUUID      bool
 	HasOptional  bool
 	HasValidated bool
 	UsesStrings  bool // the domain calls strings.TrimSpace
@@ -89,6 +90,17 @@ func (f fieldView) GoType() string {
 	}
 }
 
+// RequestType is the Go type a JSON request member decodes into. Times and
+// UUIDs arrive as strings and are parsed by the handler, so a malformed value
+// is reported with the field's own error code instead of a generic decode
+// failure.
+func (f fieldView) RequestType() string {
+	if f.Type == "time" || f.Type == "uuid" {
+		return "string"
+	}
+	return f.GoType()
+}
+
 // FieldType is the Go type in the entity and the request structs: a pointer
 // for optional fields.
 func (f fieldView) FieldType() string {
@@ -117,6 +129,7 @@ func newResourceView(spec resourceSpec) resourceView {
 		view.HasString = view.HasString || field.Type == "string"
 		view.HasTextType = view.HasTextType || field.Type == "text"
 		view.HasTime = view.HasTime || field.Type == "time"
+		view.HasUUID = view.HasUUID || field.Type == "uuid"
 		view.HasOptional = view.HasOptional || field.Optional
 		view.HasValidated = view.HasValidated || item.Validated()
 		view.UsesStrings = view.UsesStrings || field.Type == "string" || (field.Type == "text" && !field.Optional)
@@ -333,19 +346,39 @@ type wrongType struct {
 	Literal string
 }
 
-// WrongType picks the first field for which a wrongly typed JSON value is
-// reported as invalid_json. Times and UUIDs are JSON strings, so a string
-// cannot be the wrong type for them.
+// WrongType picks the first field and a JSON value of the wrong JSON type for
+// it, which must be reported as invalid_json.
 func (v resourceView) WrongType() *wrongType {
+	f := v.Fields[0]
+	if f.Type == "int" || f.Type == "bool" {
+		return &wrongType{Field: f, Literal: `"text"`}
+	}
+	return &wrongType{Field: f, Literal: "123"}
+}
+
+// badValue is a JSON value of the right type that the field must reject with
+// its own error code.
+type badValue struct {
+	Field fieldView
+	Value string // a Go expression for the JSON value
+}
+
+// BadValues lists, for every field that validates its value, a value that
+// decodes but is invalid.
+func (v resourceView) BadValues() []badValue {
+	var values []badValue
 	for _, f := range v.Fields {
-		switch f.Type {
-		case "string", "text":
-			return &wrongType{Field: f, Literal: "123"}
-		case "int", "bool":
-			return &wrongType{Field: f, Literal: `"text"`}
+		switch {
+		case f.IsTime():
+			values = append(values, badValue{f, `"yesterday"`})
+		case f.IsUUID():
+			// Well-formed but version 4: only UUIDv7 is accepted.
+			values = append(values, badValue{f, `"550e8400-e29b-41d4-a716-446655440000"`}, badValue{f, `"not-a-uuid"`})
+		case (f.IsString() || f.IsText()) && !f.Optional:
+			values = append(values, badValue{f, `"   "`})
 		}
 	}
-	return nil
+	return values
 }
 
 // FirstRequired is the first required field, or nil.
