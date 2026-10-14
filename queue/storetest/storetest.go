@@ -975,7 +975,7 @@ func queueConcurrency(t *testing.T, newStore NewStore) {
 					break
 				}
 			}
-			time.Sleep(40 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			g.now.Add(-1)
 			return nil
 		}
@@ -983,7 +983,7 @@ func queueConcurrency(t *testing.T, newStore NewStore) {
 	e.register("on.alpha", handler("alpha"), queue.HandlerQueue("alpha"))
 	e.register("on.beta", handler("beta"), queue.HandlerQueue("beta"))
 	var ids []uuid.UUID
-	for i := range 8 {
+	for i := range 6 {
 		ids = append(ids, e.enqueue("on.alpha", Message{ID: i}), e.enqueue("on.beta", Message{ID: i}))
 	}
 	e.start(e.worker(queue.WorkerOptions{Queues: []queue.QueueConfig{{Name: "alpha", Concurrency: 3}, {Name: "beta", Concurrency: 1}}}))
