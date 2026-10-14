@@ -163,10 +163,11 @@ func validDomain(domain string) bool {
 
 // rejectControl refuses every character that could end or split a header
 // line (CR, LF, NUL and every other control character, plus the Unicode line
-// and paragraph separators some clients treat as line breaks).
+// and paragraph separators some clients treat as line breaks) and the
+// bidirectional overrides and isolates, which reorder displayed text.
 func rejectControl(field, value string) error {
 	for _, r := range value {
-		if unicode.IsControl(r) || r == ' ' || r == ' ' || r == utf8.RuneError {
+		if unicode.IsControl(r) || isBidiControl(r) || r == '\u2028' || r == '\u2029' || r == utf8.RuneError {
 			return invalid(field, "contains a control or line-break character")
 		}
 	}
