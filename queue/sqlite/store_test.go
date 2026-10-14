@@ -203,3 +203,33 @@ func TestStoreRejectsNilDatabase(t *testing.T) {
 		t.Fatal("NewStore(nil) succeeded")
 	}
 }
+
+func TestRunDrainsAndReturnsWhenItsContextEnds(t *testing.T) {
+	_, store, registry, ran := newTxFixture(t)
+	worker, err := queue.NewWorker(store, registry, queue.WorkerOptions{PollInterval: 10 * time.Millisecond, MaxPollInterval: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Enqueue(context.Background(), store, registry, "order.confirm", order{ID: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for ran.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("job did not run")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run = %v, want nil after a clean drain", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}

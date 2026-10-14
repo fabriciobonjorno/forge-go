@@ -643,7 +643,7 @@ func retriesThenDead(t *testing.T, newStore NewStore) {
 	}, queue.HandlerMaxAttempts(3), queue.HandlerBackoff(queue.Backoff{Base: 100 * time.Millisecond, Max: 400 * time.Millisecond}))
 	var outcomesMu sync.Mutex
 	var outcomes []queue.Outcome
-	id := e.enqueue("flaky", Message{ID: 1, Secret: "sk_live_topsecretvalue"})
+	id := e.enqueue("flaky", Message{ID: 1, Secret: "sk_live_topsecretvalue"}) // #nosec G101 -- fixture value, not a credential
 	e.start(e.worker(queue.WorkerOptions{Hooks: queue.Hooks{Finished: func(r queue.Result) {
 		outcomesMu.Lock()
 		outcomes = append(outcomes, r.Outcome)
@@ -842,7 +842,7 @@ func handlerTimeout(t *testing.T, newStore NewStore) {
 	id := e.enqueue("hang", Message{ID: 1})
 	e.start(e.worker(queue.WorkerOptions{}))
 	info := e.waitState(id, queue.StateSucceeded)
-	if info.Job.Attempt != 2 || bytes.Contains([]byte(info.LastError), []byte("timeout")) == false {
+	if info.Job.Attempt != 2 || !bytes.Contains([]byte(info.LastError), []byte("timeout")) {
 		t.Fatalf("timed-out job = attempt %d, last error %q; want a retry that recorded the timeout", info.Job.Attempt, info.LastError)
 	}
 }

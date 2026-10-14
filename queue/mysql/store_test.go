@@ -175,6 +175,11 @@ func TestMigrationsCreateTheClaimingIndexes(t *testing.T) {
 func TestSkipLockedIsSupported(t *testing.T) {
 	// The claim depends on SKIP LOCKED; fail loudly if a server lacks it.
 	db := newDB(t)
+	var version string
+	if err := db.QueryRowContext(context.Background(), "SELECT VERSION()").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("server version: %s", version)
 	err := db.InTx(context.Background(), func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(context.Background(), "SELECT id FROM forge_jobs LIMIT 1 FOR UPDATE SKIP LOCKED")
 		if err != nil {
