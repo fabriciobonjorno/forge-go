@@ -441,6 +441,7 @@ func Test[[.Title]]Errors(t *testing.T) {
 	path := "/v1/[[.Plural]]/" + existing.ID.String()
 	missing := "/v1/[[.Plural]]/" + uuid.MustNew().String()
 	const uuidV4 = "550e8400-e29b-41d4-a716-446655440000"
+[[- if .BadValues]]
 	createBody := func() [[.Name]]Body {
 		return [[.Name]]Body{
 			[[.SampleBody 1 true]]
@@ -450,6 +451,7 @@ func Test[[.Title]]Errors(t *testing.T) {
 		body[key] = value
 		return body
 	}
+[[- end]]
 	// withVersion is an update body that changes the first field; version 0
 	// leaves the member out.
 	withVersion := func(version int) [[.Name]]Body {
