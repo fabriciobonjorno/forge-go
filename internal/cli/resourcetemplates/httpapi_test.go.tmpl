@@ -503,6 +503,8 @@ func Test[[.Title]]Errors(t *testing.T) {
 		{name: "update without body", method: http.MethodPatch, target: path, contentType: "application/json", status: 400, code: "invalid_json"},
 		{name: "delete without version", method: http.MethodDelete, target: path, status: 400, code: "invalid_version"},
 		{name: "delete with bad version", method: http.MethodDelete, target: path + "?version=one", status: 400, code: "invalid_version"},
+		{name: "delete with a version beyond int32", method: http.MethodDelete, target: path + "?version=99999999999", status: 409, code: "stale_version"},
+		{name: "delete with an overflowing version", method: http.MethodDelete, target: path + "?version=99999999999999999999", status: 400, code: "invalid_version"},
 		{name: "delete with zero version", method: http.MethodDelete, target: path + "?version=0", status: 400, code: "invalid_version"},
 		{name: "delete invalid id", method: http.MethodDelete, target: "/v1/[[.Plural]]/nope?version=1", status: 400, code: "invalid_[[.Name]]_id"},
 		{name: "delete missing", method: http.MethodDelete, target: missing + "?version=1", status: 404, code: "[[.Name]]_not_found"},

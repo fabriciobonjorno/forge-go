@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 [[- if and .Postgres .Tenant]]
 	"strings"
 [[- else if .HasString]]
@@ -325,6 +326,27 @@ func Test[[.Title]]RepositoryUpdateClearsOptionalFields(t *testing.T) {
 [[- end]]
 }
 [[- end]]
+
+// Versions are 64-bit: a client-supplied version beyond 32 bits must be a stale
+// version, not a database error.
+func Test[[.Title]]RepositoryHugeVersionsAreStale(t *testing.T) {
+	[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+	[[- else]]
+	ctx := context.Background()
+	[[- end]]
+	repo, _ := new[[.Title]]Repository(t)
+	entity := mustCreate[[.Title]](t, ctx, repo, true)
+	huge := int(int64(math.MaxInt32) + 1)
+
+	if err := repo.Delete(ctx, entity.ID, huge); !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Fatalf("delete with version %d: err = %v, want ErrStale[[.Title]]Version", huge, err)
+	}
+	entity.Version = huge
+	if _, err := repo.Update(ctx, entity); !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Fatalf("update with version %d: err = %v, want ErrStale[[.Title]]Version", huge, err)
+	}
+}
 
 func Test[[.Title]]RepositoryDelete(t *testing.T) {
 	repo, _ := new[[.Title]]Repository(t)

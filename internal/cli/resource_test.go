@@ -645,3 +645,27 @@ func TestLowerCamel(t *testing.T) {
 		}
 	}
 }
+
+// TestResourceVersionColumnIsWide: the version travels in the URL and the
+// body, so a value beyond 32 bits must be comparable in SQL instead of
+// overflowing an integer column.
+func TestResourceVersionColumnIsWide(t *testing.T) {
+	t.Parallel()
+	want := map[string]*regexp.Regexp{
+		"postgres": regexp.MustCompile(`"version"\s+bigint NOT NULL DEFAULT 1`),
+		"mysql":    regexp.MustCompile("`version`\\s+BIGINT NOT NULL DEFAULT 1"),
+		"sqlite":   regexp.MustCompile(`"version"\s+INTEGER NOT NULL DEFAULT 1`),
+	}
+	for database, pattern := range want {
+		rendered, err := renderResource(resourceSpec{
+			resourceRequest: resourceRequest{Name: "product", Plural: "products", Fields: minimalFields},
+			Module:          "example.com/shop", Database: database,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !pattern.MatchString(rendered.migrationUp) {
+			t.Errorf("%s: the version column is not 64-bit:\n%s", database, rendered.migrationUp)
+		}
+	}
+}
