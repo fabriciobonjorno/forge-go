@@ -267,7 +267,7 @@ func (s *Store) Recover(ctx context.Context) (int64, error) {
 			    finished_at = CASE WHEN attempts >= max_attempts THEN UTC_TIMESTAMP(6) END,
 			    lease_token = NULL, lease_until = NULL, locked_by = NULL,
 			    last_error = 'lease expired: the worker stopped renewing it'
-			WHERE id IN `+inClause(len(ids)), ids...)
+			WHERE id IN `+inClause(len(ids)), ids...) // #nosec G202 -- inClause emits only "?" placeholders
 		if err != nil {
 			return err
 		}
