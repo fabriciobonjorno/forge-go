@@ -65,16 +65,20 @@ type Limits struct {
 	MaxMessageBytes int
 }
 
-// DefaultLimits returns the limits used when none are configured. They sit
-// below what common providers accept (25 MB messages, 100 recipients).
+// DefaultLimits returns the limits used when none are configured: 255-rune
+// subjects, 100 recipients, 2 MiB per body, 10 attachments of at most 7 MiB
+// each and 10 MiB of content in total (about 13.7 MB once base64 encoded,
+// below the 25 MB most providers accept). The encoder holds a message in
+// memory, so large values multiply across concurrent sends; raise them
+// deliberately with WithLimits and send big files as links.
 func DefaultLimits() Limits {
 	return Limits{
 		MaxSubjectRunes:    255,
 		MaxRecipients:      100,
-		MaxBodyBytes:       5 << 20,
-		MaxAttachments:     20,
-		MaxAttachmentBytes: 10 << 20,
-		MaxMessageBytes:    18 << 20,
+		MaxBodyBytes:       2 << 20,
+		MaxAttachments:     10,
+		MaxAttachmentBytes: 7 << 20,
+		MaxMessageBytes:    10 << 20,
 	}
 }
 

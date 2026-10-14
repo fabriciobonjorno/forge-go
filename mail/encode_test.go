@@ -475,22 +475,22 @@ func TestRequiredFieldsAndLimits(t *testing.T) {
 			}
 		},
 		"name too long":     func(m *forgemail.Message) { m.From.Name = strings.Repeat("n", 256) },
-		"body too large":    func(m *forgemail.Message) { m.Text = strings.Repeat("x", 5<<20+1) },
+		"body too large":    func(m *forgemail.Message) { m.Text = strings.Repeat("x", 2<<20+1) },
 		"invalid utf8 body": func(m *forgemail.Message) { m.Text = "a\xffb" },
 		"empty attachment": func(m *forgemail.Message) {
 			m.Attachments = []forgemail.Attachment{{Filename: "a.txt"}}
 		},
 		"attachment too large": func(m *forgemail.Message) {
-			m.Attachments = []forgemail.Attachment{{Filename: "a.bin", Data: make([]byte, 10<<20+1)}}
+			m.Attachments = []forgemail.Attachment{{Filename: "a.bin", Data: make([]byte, 7<<20+1)}}
 		},
 		"total too large": func(m *forgemail.Message) {
 			m.Attachments = []forgemail.Attachment{
-				{Filename: "a.bin", Data: make([]byte, 9<<20)},
-				{Filename: "b.bin", Data: make([]byte, 9<<20)},
+				{Filename: "a.bin", Data: make([]byte, 6<<20)},
+				{Filename: "b.bin", Data: make([]byte, 6<<20)},
 			}
 		},
 		"too many attachments": func(m *forgemail.Message) {
-			for i := 0; i < 21; i++ {
+			for i := 0; i < 11; i++ {
 				m.Attachments = append(m.Attachments, forgemail.Attachment{Filename: "a.txt", Data: []byte("x")})
 			}
 		},

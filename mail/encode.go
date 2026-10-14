@@ -115,6 +115,7 @@ func Encode(msg Message, options ...EncodeOption) (Encoded, error) {
 	}
 
 	var out bytes.Buffer
+	out.Grow(4096)
 	header := func(name, value string) {
 		out.WriteString(foldHeader(name, value))
 		out.WriteString("\r\n")
@@ -148,7 +149,13 @@ func Encode(msg Message, options ...EncodeOption) (Encoded, error) {
 		header(name, root.header[name][0])
 	}
 	out.WriteString("\r\n")
-	out.Write(root.body)
+	// Bodies stream straight into the output buffer: an attachment is
+	// base64-encoded into its final place instead of being built, copied
+	// into a multipart buffer and copied again.
+	out.Grow(root.size)
+	if err := root.write(&out); err != nil {
+		return Encoded{}, err
+	}
 	if !bytes.HasSuffix(out.Bytes(), []byte("\r\n")) {
 		out.WriteString("\r\n")
 	}
@@ -160,10 +167,13 @@ func Encode(msg Message, options ...EncodeOption) (Encoded, error) {
 	}, nil
 }
 
-// entity is one MIME entity: its headers and its already-encoded body.
+// entity is one MIME entity: its headers and a function that writes its
+// encoded body. size is an upper-bound estimate used to size the output
+// buffer once.
 type entity struct {
 	header textproto.MIMEHeader
-	body   []byte
+	size   int
+	write  func(w io.Writer) error
 }
 
 func (e *encoder) body(msg Message) (entity, error) {
@@ -225,29 +235,35 @@ func (e *encoder) multipart(subtype string, parts []entity) (entity, error) {
 	if err != nil {
 		return entity{}, err
 	}
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := writer.SetBoundary(boundary); err != nil {
-		return entity{}, err
-	}
-	for _, part := range parts {
-		w, err := writer.CreatePart(part.header)
-		if err != nil {
-			return entity{}, err
-		}
-		if _, err := w.Write(part.body); err != nil {
-			return entity{}, err
-		}
-	}
-	if err := writer.Close(); err != nil {
-		return entity{}, err
-	}
-	body.WriteString("\r\n")
 	contentType := mime.FormatMediaType("multipart/"+subtype, map[string]string{"boundary": boundary})
 	if contentType == "" {
 		return entity{}, errors.New("mail: format multipart content type")
 	}
-	return entity{header: textproto.MIMEHeader{"Content-Type": {contentType}}, body: body.Bytes()}, nil
+	size := 256
+	for _, part := range parts {
+		size += part.size + 512
+	}
+	write := func(w io.Writer) error {
+		writer := multipart.NewWriter(w)
+		if err := writer.SetBoundary(boundary); err != nil {
+			return err
+		}
+		for _, part := range parts {
+			pw, err := writer.CreatePart(part.header)
+			if err != nil {
+				return err
+			}
+			if err := part.write(pw); err != nil {
+				return err
+			}
+		}
+		if err := writer.Close(); err != nil {
+			return err
+		}
+		_, err := io.WriteString(w, "\r\n")
+		return err
+	}
+	return entity{header: textproto.MIMEHeader{"Content-Type": {contentType}}, size: size, write: write}, nil
 }
 
 // boundary returns an unguessable boundary. 128 random bits make a collision
@@ -272,12 +288,17 @@ func quotedPrintablePart(mediaType, text string) entity {
 	if !bytes.HasSuffix(body.Bytes(), []byte("\r\n")) {
 		body.WriteString("\r\n")
 	}
+	data := body.Bytes()
 	return entity{
 		header: textproto.MIMEHeader{
 			"Content-Type":              {mime.FormatMediaType(mediaType, map[string]string{"charset": "utf-8"})},
 			"Content-Transfer-Encoding": {"quoted-printable"},
 		},
-		body: body.Bytes(),
+		size: len(data),
+		write: func(w io.Writer) error {
+			_, err := w.Write(data)
+			return err
+		},
 	}
 }
 
@@ -298,17 +319,32 @@ func attachmentEntity(attachment Attachment, inline bool) entity {
 	if attachment.ContentID != "" {
 		header["Content-Id"] = []string{"<" + attachment.ContentID + ">"}
 	}
-	encoded := base64.StdEncoding.EncodeToString(attachment.Data)
-	var body bytes.Buffer
-	for len(encoded) > 76 {
-		body.WriteString(encoded[:76])
-		body.WriteString("\r\n")
-		encoded = encoded[76:]
+	data := attachment.Data
+	lines := (len(data) + base64LineBytes - 1) / base64LineBytes
+	return entity{
+		header: header,
+		size:   base64.StdEncoding.EncodedLen(len(data)) + 2*lines,
+		write: func(w io.Writer) error {
+			// Encode 57 input bytes into one 76-character line at a time,
+			// straight into w; no copy of the whole attachment is made.
+			var line [base64LineBytes/3*4 + 2]byte
+			for rest := data; len(rest) > 0; {
+				n := min(base64LineBytes, len(rest))
+				encoded := base64.StdEncoding.EncodedLen(n)
+				base64.StdEncoding.Encode(line[:encoded], rest[:n])
+				line[encoded], line[encoded+1] = '\r', '\n'
+				if _, err := w.Write(line[:encoded+2]); err != nil {
+					return err
+				}
+				rest = rest[n:]
+			}
+			return nil
+		},
 	}
-	body.WriteString(encoded)
-	body.WriteString("\r\n")
-	return entity{header: header, body: body.Bytes()}
 }
+
+// base64LineBytes input bytes encode to exactly 76 base64 characters.
+const base64LineBytes = 57
 
 // foldHeader renders "Name: value" with lines folded at spaces so none
 // exceeds 78 columns where a space allows. Folding inserts CRLF before an
