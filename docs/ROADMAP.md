@@ -296,12 +296,17 @@ when they have code to hold. `forge generate migration` already exists.
 Generator checklist (planned unless an implementation and its tests prove
 otherwise):
 
-- [ ] `forge generate resource NAME`: coherent migration, validation,
-  persistence, HTTP and tests; no empty layers or public CRUD by default.
-- [ ] Explicit resource scope: `--tenant-scoped` versus `--global`, with the
-  correct database-specific isolation pattern and cross-tenant tests.
-- [ ] Resource-generator `--dry-run` and refuse-overwrite behavior with stable,
-  reviewable output (migration/view previews are implemented separately).
+- [x] `forge generate resource NAME field:type...`: coherent migration,
+  validation, persistence, HTTP and tests for PostgreSQL, MySQL, MariaDB and
+  SQLite; no empty layers or public CRUD by default
+  ([ADR 0021](adr/0021-resource-generator.md)).
+- [x] Explicit resource scope: `--tenant-scoped` versus `--global`, with the
+  correct database-specific isolation pattern (forced RLS on PostgreSQL,
+  statement predicates elsewhere) and cross-tenant tests, including a
+  non-superuser RLS test on PostgreSQL.
+- [x] Resource-generator `--dry-run` and refuse-overwrite behavior with stable,
+  reviewable output (all-or-nothing; the wiring for `bootstrap.go` is printed,
+  never applied).
 - [x] `forge generate job NAME`: cancellation-aware job stub and generated
   tests; docs cover bounded scheduler concurrency, shutdown context,
   idempotency across replicas, and the absence of automatic retries.
@@ -310,7 +315,10 @@ otherwise):
 - [ ] SQL view generators remain separate from server-rendered HTML and need
   explicit database-dialect and tenant-isolation contracts.
 - [ ] Generated applications compile, vet, test and pass database/Docker
-  smoke checks for every supported profile.
+  smoke checks for every supported profile. (The end-to-end test generates a
+  tenant-scoped and a global resource per database, wires them as printed, and
+  runs vet, build, the generated tests and migrate/rollback; Docker smoke
+  checks run in CI.)
 
 ## Phase 9 - Performance
 

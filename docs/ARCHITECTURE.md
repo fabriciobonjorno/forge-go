@@ -416,6 +416,56 @@ the database pool directly in `app/bootstrap`.
 `app/domain`, `app/application`, `app/adapters/persistence`,
 `app/adapters/httpapi`, and `app/bootstrap`.
 
+## Resource generator
+
+`forge generate resource NAME field:type... (--tenant-scoped | --global)`
+([ADR 0021](adr/0021-resource-generator.md)) adds one resource to the layers
+above without editing existing files. It reads the database adapter from
+`FORGE_DATABASE_URL` exactly as `forge inspect` does and writes:
+
+| File | Contents |
+| ---- | -------- |
+| `db/migrations/<UTC timestamp>_create_<plural>.{up,down}.sql` | The table, in the dialect of the application's database |
+| `app/domain/<name>.go` | Entity, `<Name>Input`, `<Name>Changes`, per-field validation, `fault` sentinels with stable codes |
+| `app/application/<name>.go` | `<Name>Repository` port and `<Name>Service` (create, get, list, update, delete) |
+| `app/adapters/persistence/<name>.go` | Explicit SQL for PostgreSQL, MySQL/MariaDB or SQLite, errors through the adapter's `Translate` |
+| `app/adapters/httpapi/<name>.go` | `Register<Plural>(router, service, protect)` and thin handlers |
+| `*_test.go` next to each | Domain table tests, an in-memory-fake service test, database integration tests and handler tests |
+
+Every exported name carries the resource name (`ProductService`,
+`ErrProductNotFound`, `RegisterProducts`), so several resources share the
+same packages; the generator refuses to run when a name it would declare is
+already declared there. Rules the generated code follows:
+
+- **UUIDv7 identifiers only.** `uuid` on PostgreSQL (`DEFAULT uuidv7()` is a
+  fallback for rows inserted by hand), `CHAR(36)` on MySQL and MariaDB, `TEXT`
+  in a `STRICT` table on SQLite. Ids come from an injected `uuid.New`. A
+  framework test renders every database and scope and fails on `serial`,
+  `AUTO_INCREMENT`, `gen_random_uuid()`, `UUID()` or any float or decimal
+  type.
+- **Explicit scope.** Tenant-scoped repositories take the tenant from
+  `tenancy.Require(ctx)` and bind `tenant_id` in every statement. On
+  PostgreSQL they also run in `InTenantTx` behind `ENABLE` and `FORCE ROW
+  LEVEL SECURITY` policies, and the generated tests prove the policy itself
+  with a non-superuser role. MySQL, MariaDB and SQLite have no row-level
+  security, so the statement predicates are the only isolation
+  ([ADR 0017](adr/0017-tenancy-enforcement-mysql-sqlite.md)).
+- **No public routes.** `Register<Plural>` returns an error without a
+  `protect` function and asks it for `<plural>:read` or `<plural>:write` per
+  route. With Forge identity (PostgreSQL) the migration seeds those
+  permissions and the printed wiring uses `auth.Require` behind the
+  authentication middleware; elsewhere the printed guard denies every request
+  until the application implements it.
+- **Optimistic locking and keyset pagination.** `PATCH` and `DELETE` carry the
+  version the client read and answer `409` when it is stale; lists are
+  newest-first keyset pages. `PATCH` changes only the members it names, and
+  `null` clears an optional field.
+- **No hidden edits.** The generator never edits `bootstrap.go`; it prints the
+  imports and the wiring to add, also with `--dry-run`.
+
+Templates are embedded text templates in `internal/cli/resourcetemplates`,
+rendered by `internal/cli/resource*.go` and passed through `gofmt`.
+
 ## Architecture decision records
 
 | ADR | Title |
@@ -436,10 +486,12 @@ the database pool directly in `app/bootstrap`.
 | [0018](adr/0018-transactional-outbox-foundation.md) | Transactional outbox foundation |
 | [0019](adr/0019-outbox-dispatch.md) | PostgreSQL outbox dispatch |
 | [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
+| [0021](adr/0021-resource-generator.md) | Resource generator |
 
 ## Not yet implemented
 
-OpenTelemetry, OpenAPI generation, the AI execution subsystem, and domain
-resource generators (`forge generate` supports SQL migrations and embedded
-HTML views). See
+OpenTelemetry, OpenAPI generation, the AI execution subsystem, and
+relationships, decimal types, soft delete and audit columns in generated
+resources (`forge generate` supports SQL migrations, embedded HTML views, job
+stubs and resources). See
 [ROADMAP.md](ROADMAP.md).
