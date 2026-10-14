@@ -1,0 +1,115 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"[[.Module]]/app/domain"
+	"github.com/fabriciobonjorno/forge-go/pagination"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+// [[.Title]]Repository persists [[.Plural]]. Implementations report
+// domain.Err[[.Title]]NotFound for missing [[.Plural]] and
+// domain.ErrStale[[.Title]]Version for lost optimistic-lock races.
+[[- if .Tenant]]
+//
+// The repository is tenant-scoped: every method takes the tenant from the
+// context (tenancy.Require) and never reads or writes another tenant's rows.
+[[- end]]
+type [[.Title]]Repository interface {
+	// Create stores a new [[.Name]] and returns it as stored.
+	Create(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error)
+	Get(ctx context.Context, id uuid.UUID) (domain.[[.Title]], error)
+	// List returns up to limit [[.Plural]] newest first, starting after the one
+	// with id after, or from the newest when after is the zero UUID.
+	List(ctx context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error)
+	// Update writes entity only if the stored version still equals
+	// entity.Version, advances the version and returns the [[.Name]] as stored.
+	Update(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error)
+	// Delete removes the [[.Name]] only if the stored version still equals version.
+	Delete(ctx context.Context, id uuid.UUID, version int) error
+}
+
+// [[.Title]]Service implements the [[.Name]] use cases. It is safe for concurrent use
+// when its repository is.
+type [[.Title]]Service struct {
+	[[.Plural]] [[.Title]]Repository
+	now   func() time.Time
+	newID func() (uuid.UUID, error)
+}
+
+// New[[.Title]]Service wires the use cases. now and newID are injected so tests
+// control time and identifiers; production passes time.Now and uuid.New.
+func New[[.Title]]Service([[.Plural]] [[.Title]]Repository, now func() time.Time, newID func() (uuid.UUID, error)) (*[[.Title]]Service, error) {
+	if [[.Plural]] == nil || now == nil || newID == nil {
+		return nil, errors.New("application: [[.Name]] repository, clock and id source are required")
+	}
+	return &[[.Title]]Service{[[.Plural]]: [[.Plural]], now: now, newID: newID}, nil
+}
+
+// Create validates input and stores a new [[.Name]].
+func (s *[[.Title]]Service) Create(ctx context.Context, input domain.[[.Title]]Input) (domain.[[.Title]], error) {
+	id, err := s.newID()
+	if err != nil {
+		return domain.[[.Title]]{}, fmt.Errorf("generate [[.Name]] id: %w", err)
+	}
+	entity, err := domain.New[[.Title]](id, input, s.now())
+	if err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	return s.[[.Plural]].Create(ctx, entity)
+}
+
+// Get returns the [[.Name]] with id.
+func (s *[[.Title]]Service) Get(ctx context.Context, id uuid.UUID) (domain.[[.Title]], error) {
+	return s.[[.Plural]].Get(ctx, id)
+}
+
+// List returns one page of [[.Plural]], newest first. A zero limit means
+// pagination.DefaultLimit; limits above pagination.MaxLimit are capped.
+func (s *[[.Title]]Service) List(ctx context.Context, request pagination.Request) (pagination.Page[domain.[[.Title]]], error) {
+	limit := request.Limit
+	if limit < 1 {
+		limit = pagination.DefaultLimit
+	}
+	limit = min(limit, pagination.MaxLimit)
+	// One extra row tells NewPage whether another page exists.
+	rows, err := s.[[.Plural]].List(ctx, request.After, limit+1)
+	if err != nil {
+		return pagination.Page[domain.[[.Title]]]{}, err
+	}
+	return pagination.NewPage(rows, limit, func(entity domain.[[.Title]]) uuid.UUID { return entity.ID }), nil
+}
+
+// Update applies changes for a caller who last saw version. The write itself
+// is guarded by that version, so a change made between the read and the write
+// surfaces as domain.ErrStale[[.Title]]Version instead of being overwritten.
+func (s *[[.Title]]Service) Update(ctx context.Context, id uuid.UUID, version int, changes domain.[[.Title]]Changes) (domain.[[.Title]], error) {
+	// Reject impossible input before touching the store.
+	if err := domain.Validate[[.Title]]Version(version); err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	current, err := s.[[.Plural]].Get(ctx, id)
+	if err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	if current.Version != version {
+		return domain.[[.Title]]{}, domain.ErrStale[[.Title]]Version
+	}
+	updated, err := current.Apply(changes, s.now())
+	if err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	return s.[[.Plural]].Update(ctx, updated)
+}
+
+// Delete removes the [[.Name]] for a caller who last saw version.
+func (s *[[.Title]]Service) Delete(ctx context.Context, id uuid.UUID, version int) error {
+	if err := domain.Validate[[.Title]]Version(version); err != nil {
+		return err
+	}
+	return s.[[.Plural]].Delete(ctx, id, version)
+}

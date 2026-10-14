@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]"
+
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 var jobName = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z][a-z0-9]*)*$`)
@@ -26,9 +28,18 @@ func runGenerateAt(args []string, stdout io.Writer, root string) error {
 }
 
 func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Time) error {
+	return runGenerateEnv(args, stdout, root, os.Environ(), now)
+}
+
+// runGenerateEnv is runGenerateAtTime with the process environment passed in,
+// for generators that read FORGE_DATABASE_URL.
+func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
+	if len(args) > 0 && args[0] == "resource" {
+		return runGenerateResource(args[1:], stdout, root, env, now)
+	}
 	dryRun := len(args) == 3 && args[2] == "--dry-run"
 	if (len(args) != 2 && !dryRun) || (len(args) == 3 && !dryRun) {
-		return errors.New("usage: forge generate <migration|view|job> NAME [--dry-run]")
+		return errors.New(generateUsage)
 	}
 	var files []generatedFile
 	var err error
@@ -40,7 +51,7 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 	case "job":
 		files, err = planJob(root, args[1])
 	default:
-		return errors.New("usage: forge generate <migration|view|job> NAME [--dry-run]")
+		return errors.New(generateUsage)
 	}
 	if err != nil {
 		return err
@@ -301,13 +312,28 @@ func planMigration(root, name string, now time.Time) ([]generatedFile, error) {
 		return nil, errors.New("db/migrations not found: run this inside a Forge application with a database")
 	}
 	defer func() { _ = projectRoot.Close() }()
-	dir := filepath.Join("db", "migrations")
-	if err := rejectExistingSymlinkPaths(projectRoot, []string{dir}); err != nil {
+	dir, version, err := nextMigrationVersion(projectRoot, now)
+	if err != nil {
 		return nil, err
+	}
+	base := filepath.Join(dir, version+"_"+name)
+	up, down := base+".up.sql", base+".down.sql"
+	upBody := fmt.Sprintf("-- %s\n--\n-- Runs inside a transaction. For statements that cannot, such as\n-- CREATE INDEX CONCURRENTLY, make this the first line:\n-- -- forge:no-transaction\n", name)
+	downBody := fmt.Sprintf("-- Reverts %s. Delete this file if the migration cannot be reverted.\n", name)
+	return []generatedFile{{path: up, content: upBody}, {path: down, content: downBody}}, nil
+}
+
+// nextMigrationVersion returns the migrations directory and the UTC timestamp
+// version for a migration generated at now, bumped past any existing version
+// so migrations generated in the same second stay ordered.
+func nextMigrationVersion(projectRoot *os.Root, now time.Time) (dir, version string, err error) {
+	dir = filepath.Join("db", "migrations")
+	if err := rejectExistingSymlinkPaths(projectRoot, []string{dir}); err != nil {
+		return "", "", err
 	}
 	entries, err := fs.ReadDir(projectRoot.FS(), dir)
 	if err != nil {
-		return nil, errors.New("db/migrations not found: run this inside a Forge application with a database")
+		return "", "", errors.New("db/migrations not found: run this inside a Forge application with a database")
 	}
 	versions := make(map[string]bool, len(entries))
 	for _, entry := range entries {
@@ -319,11 +345,7 @@ func planMigration(root, name string, now time.Time) ([]generatedFile, error) {
 	for versions[stamp.Format("20060102150405")] {
 		stamp = stamp.Add(time.Second)
 	}
-	base := filepath.Join(dir, stamp.Format("20060102150405")+"_"+name)
-	up, down := base+".up.sql", base+".down.sql"
-	upBody := fmt.Sprintf("-- %s\n--\n-- Runs inside a transaction. For statements that cannot, such as\n-- CREATE INDEX CONCURRENTLY, make this the first line:\n-- -- forge:no-transaction\n", name)
-	downBody := fmt.Sprintf("-- Reverts %s. Delete this file if the migration cannot be reverted.\n", name)
-	return []generatedFile{{path: up, content: upBody}, {path: down, content: downBody}}, nil
+	return dir, stamp.Format("20060102150405"), nil
 }
 
 func applyGeneratedFiles(rootPath string, directories []string, files []generatedFile) error {
@@ -386,14 +408,21 @@ func ensureDirectoryTree(root *os.Root, directory string) error {
 func rejectExistingSymlinkPaths(root *os.Root, paths []string) error {
 	seen := make(map[string]struct{})
 	for _, path := range paths {
-		for current := filepath.Clean(path); current != "." && current != string(filepath.Separator); current = filepath.Dir(current) {
+		// Walk from the top so a symlinked directory is reported as such
+		// rather than as an error from looking through it.
+		current := ""
+		for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+			if part == "" || part == "." {
+				continue
+			}
+			current = filepath.Join(current, part)
 			if _, ok := seen[current]; ok {
 				continue
 			}
 			seen[current] = struct{}{}
 			info, err := root.Lstat(current)
 			if errors.Is(err, os.ErrNotExist) {
-				continue
+				break
 			}
 			if err != nil {
 				return err

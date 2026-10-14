@@ -1,0 +1,320 @@
+package domain_test
+
+import (
+	"encoding/json"
+	"errors"
+[[- if .HasText]]
+	"strings"
+[[- end]]
+	"testing"
+	"time"
+
+	"[[.Module]]/app/domain"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+func [[.Name]]JSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func [[.Name]]Created() time.Time {
+	return time.Date(2026, time.March, 1, 10, 0, 0, 0, time.UTC)
+}
+
+// valid[[.Title]]Input has every field set.
+func valid[[.Title]]Input() domain.[[.Title]]Input {
+	return domain.[[.Title]]Input{
+		[[.SampleInput 1 true]]
+	}
+}
+
+// minimal[[.Title]]Input has only the required fields.
+func minimal[[.Title]]Input() domain.[[.Title]]Input {
+	return domain.[[.Title]]Input{
+[[- range .RequiredFields]]
+		[[.Title]]: [[.SampleValue 3]],
+[[- end]]
+	}
+}
+
+func Test[[.Title]]NewKeepsEveryField(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustNew()
+	input := valid[[.Title]]Input()
+	got, err := domain.New[[.Title]](id, input, [[.Name]]Created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := domain.[[.Title]]{
+		ID: id,
+[[- range .Fields]]
+		[[.Title]]: input.[[.Title]],
+[[- end]]
+		Version: 1, CreatedAt: [[.Name]]Created(), UpdatedAt: [[.Name]]Created(),
+	}
+	if [[.Name]]JSON(t, got) != [[.Name]]JSON(t, want) {
+		t.Fatalf("New[[.Title]] = %s, want %s", [[.Name]]JSON(t, got), [[.Name]]JSON(t, want))
+	}
+}
+
+func Test[[.Title]]NewAcceptsMissingOptionalFields(t *testing.T) {
+	t.Parallel()
+	got, err := domain.New[[.Title]](uuid.MustNew(), minimal[[.Title]]Input(), [[.Name]]Created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != 1 {
+		t.Fatalf("version = %d, want 1", got.Version)
+	}
+[[- range .OptionalFields]]
+	if got.[[.Title]] != nil {
+		t.Errorf("[[.Name]] = %v, want nil", got.[[.Title]])
+	}
+[[- end]]
+}
+
+func Test[[.Title]]NewRequiresUUIDv7ID(t *testing.T) {
+	t.Parallel()
+	for name, id := range map[string]uuid.UUID{"zero": {}, "version 4": {6: 0x40, 8: 0x80}} {
+		if _, err := domain.New[[.Title]](id, valid[[.Title]]Input(), [[.Name]]Created()); !errors.Is(err, domain.ErrInvalid[[.Title]]ID) {
+			t.Errorf("%s id: err = %v, want ErrInvalid[[.Title]]ID", name, err)
+		}
+	}
+}
+
+func Test[[.Title]]NewNormalizesTimestamps(t *testing.T) {
+	t.Parallel()
+	zone := time.FixedZone("UTC+1", 3600)
+	got, err := domain.New[[.Title]](uuid.MustNew(), valid[[.Title]]Input(), time.Date(2026, time.March, 1, 11, 0, 0, 123456789, zone))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, time.March, 1, 10, 0, 0, 123456000, time.UTC)
+	if !got.CreatedAt.Equal(want) || !got.UpdatedAt.Equal(want) || got.CreatedAt.Location() != time.UTC {
+		t.Fatalf("timestamps = %v / %v, want %v in UTC at microsecond precision", got.CreatedAt, got.UpdatedAt, want)
+	}
+}
+
+// [[.Name]]InvalidValues are values the domain must reject, whether they arrive
+// as a new [[.Name]] or as a change.
+var [[.Name]]InvalidValues = []struct {
+	name   string
+	input  func(*domain.[[.Title]]Input)
+	change func(*domain.[[.Title]]Changes)
+	want   error
+}{
+[[- range .InvalidCases]]
+	{
+		name:   "[[.Name]]",
+		input:  func(in *domain.[[$.Title]]Input) { in.[[.Field.Title]] = [[.Field.Literal .Expr]] },
+		change: func(c *domain.[[$.Title]]Changes) { c.[[.Field.Title]] = new([[.Expr]]) },
+		want:   domain.[[.Field.Err]],
+	},
+[[- end]]
+}
+
+func Test[[.Title]]NewRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+	for _, test := range [[.Name]]InvalidValues {
+		input := valid[[.Title]]Input()
+		test.input(&input)
+		if _, err := domain.New[[.Title]](uuid.MustNew(), input, [[.Name]]Created()); !errors.Is(err, test.want) {
+			t.Errorf("%s: err = %v, want %v", test.name, err, test.want)
+		}
+	}
+}
+
+func Test[[.Title]]ApplyRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+	base, err := domain.New[[.Title]](uuid.MustNew(), valid[[.Title]]Input(), [[.Name]]Created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := [[.Name]]JSON(t, base)
+	for _, test := range [[.Name]]InvalidValues {
+		var changes domain.[[.Title]]Changes
+		test.change(&changes)
+		if _, err := base.Apply(changes, [[.Name]]Created().Add(time.Hour)); !errors.Is(err, test.want) {
+			t.Errorf("%s: err = %v, want %v", test.name, err, test.want)
+		}
+	}
+	if after := [[.Name]]JSON(t, base); after != before {
+		t.Fatalf("a rejected change modified the [[.Name]]: %s", after)
+	}
+}
+[[- if .HasString]]
+
+func Test[[.Title]]NewTrimsAndBoundsStrings(t *testing.T) {
+	t.Parallel()
+[[- range .Fields]]
+[[- if .IsString]]
+	t.Run("[[.Name]]", func(t *testing.T) {
+		t.Parallel()
+		input := valid[[$.Title]]Input()
+		input.[[.Title]] = [[.Literal `"  padded  "`]]
+		got, err := domain.New[[$.Title]](uuid.MustNew(), input, [[$.Name]]Created())
+		if err != nil || [[.Access "got"]] != "padded" {
+			t.Fatalf("padded: got %v, err = %v; want the trimmed value", got.[[.Title]], err)
+		}
+		// The limit counts characters, not bytes: 255 two-byte characters fit.
+		input.[[.Title]] = [[.Literal `strings.Repeat("é", 255)`]]
+		if _, err := domain.New[[$.Title]](uuid.MustNew(), input, [[$.Name]]Created()); err != nil {
+			t.Fatalf("255 characters: %v", err)
+		}
+	})
+[[- end]]
+[[- end]]
+}
+[[- end]]
+[[- if .HasTextType]]
+
+func Test[[.Title]]NewAcceptsTextAtTheLimitAndLineBreaks(t *testing.T) {
+	t.Parallel()
+[[- range .Fields]]
+[[- if .IsText]]
+	t.Run("[[.Name]]", func(t *testing.T) {
+		t.Parallel()
+		input := valid[[$.Title]]Input()
+		input.[[.Title]] = [[.Literal `strings.Repeat("a", 65535)`]]
+		if _, err := domain.New[[$.Title]](uuid.MustNew(), input, [[$.Name]]Created()); err != nil {
+			t.Fatalf("65535 bytes: %v", err)
+		}
+		input.[[.Title]] = [[.Literal `"first\r\n\tsecond\n"`]]
+		if _, err := domain.New[[$.Title]](uuid.MustNew(), input, [[$.Name]]Created()); err != nil {
+			t.Fatalf("line breaks: %v", err)
+		}
+	})
+[[- end]]
+[[- end]]
+}
+[[- end]]
+[[- if .HasTime]]
+
+func Test[[.Title]]NewStoresTimeFieldsInUTCAtMicroseconds(t *testing.T) {
+	t.Parallel()
+	zone := time.FixedZone("UTC+1", 3600)
+	local := time.Date(2026, time.January, 5, 13, 0, 0, 123456789, zone)
+	want := time.Date(2026, time.January, 5, 12, 0, 0, 123456000, time.UTC)
+[[- range .Fields]]
+[[- if .IsTime]]
+	t.Run("[[.Name]]", func(t *testing.T) {
+		t.Parallel()
+		input := valid[[$.Title]]Input()
+		input.[[.Title]] = [[.Literal `local`]]
+		got, err := domain.New[[$.Title]](uuid.MustNew(), input, [[$.Name]]Created())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value := [[.Access "got"]]; !value.Equal(want) || value.Location() != time.UTC {
+			t.Fatalf("[[.Name]] = %v, want %v in UTC", value, want)
+		}
+	})
+[[- end]]
+[[- end]]
+}
+[[- end]]
+
+func Test[[.Title]]ApplyChangesEveryField(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustNew()
+	base, err := domain.New[[.Title]](id, valid[[.Title]]Input(), [[.Name]]Created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := [[.Name]]JSON(t, base)
+	changes := domain.[[.Title]]Changes{
+		[[.SampleChanges 2]]
+	}
+	later := [[.Name]]Created().Add(time.Hour)
+	got, err := base.Apply(changes, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Creating a [[.Name]] from the same values must give the same result.
+	want, err := domain.New[[.Title]](id, domain.[[.Title]]Input{
+[[- range .Fields]]
+		[[.Title]]: [[if not .Optional]]*[[end]]changes.[[.Title]],
+[[- end]]
+	}, [[.Name]]Created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.UpdatedAt = later
+	if [[.Name]]JSON(t, got) != [[.Name]]JSON(t, want) {
+		t.Fatalf("Apply = %s, want %s", [[.Name]]JSON(t, got), [[.Name]]JSON(t, want))
+	}
+	if got.Version != base.Version {
+		t.Fatalf("Apply changed the version to %d; the store advances it", got.Version)
+	}
+	if after := [[.Name]]JSON(t, base); after != before {
+		t.Fatalf("Apply modified its receiver: %s", after)
+	}
+}
+
+func Test[[.Title]]ApplyEmptyChangesAreRejected(t *testing.T) {
+	t.Parallel()
+	base, err := domain.New[[.Title]](uuid.MustNew(), valid[[.Title]]Input(), [[.Name]]Created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.Apply(domain.[[.Title]]Changes{}, [[.Name]]Created()); !errors.Is(err, domain.ErrEmpty[[.Title]]Changes) {
+		t.Fatalf("err = %v, want ErrEmpty[[.Title]]Changes", err)
+	}
+}
+[[- range .OptionalFields]]
+
+func Test[[$.Title]]Apply[[.Title]]CanBeCleared(t *testing.T) {
+	t.Parallel()
+	base, err := domain.New[[$.Title]](uuid.MustNew(), valid[[$.Title]]Input(), [[$.Name]]Created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := base.Apply(domain.[[$.Title]]Changes{Clear[[.Title]]: true}, [[$.Name]]Created().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.[[.Title]] != nil {
+		t.Fatalf("[[.Name]] = %v after clearing, want nil", got.[[.Title]])
+	}
+	if base.[[.Title]] == nil {
+		t.Fatal("clearing modified the receiver")
+	}
+	both := domain.[[$.Title]]Changes{Clear[[.Title]]: true, [[.Title]]: new([[.SampleExpr 2]])}
+	if _, err := base.Apply(both, [[$.Name]]Created()); !errors.Is(err, domain.[[.Err]]) {
+		t.Fatalf("set and clear together: err = %v, want [[.Err]]", err)
+	}
+}
+[[- end]]
+
+func Test[[.Title]]ParseID(t *testing.T) {
+	t.Parallel()
+	id := uuid.MustNew()
+	got, err := domain.Parse[[.Title]]ID(id.String())
+	if err != nil || got != id {
+		t.Fatalf("Parse[[.Title]]ID(%s) = %v, %v", id, got, err)
+	}
+	for _, value := range []string{"", "not-a-uuid", "550e8400-e29b-41d4-a716-446655440000"} {
+		if _, err := domain.Parse[[.Title]]ID(value); !errors.Is(err, domain.ErrInvalid[[.Title]]ID) {
+			t.Errorf("Parse[[.Title]]ID(%q): err = %v, want ErrInvalid[[.Title]]ID", value, err)
+		}
+	}
+}
+
+func Test[[.Title]]ValidateVersion(t *testing.T) {
+	t.Parallel()
+	for _, version := range []int{1, 2, 1 << 30} {
+		if err := domain.Validate[[.Title]]Version(version); err != nil {
+			t.Errorf("version %d: %v", version, err)
+		}
+	}
+	for _, version := range []int{0, -1} {
+		if err := domain.Validate[[.Title]]Version(version); !errors.Is(err, domain.ErrInvalid[[.Title]]Version) {
+			t.Errorf("version %d: err = %v, want ErrInvalid[[.Title]]Version", version, err)
+		}
+	}
+}

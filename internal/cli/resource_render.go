@@ -1,0 +1,432 @@
+package cli
+
+import (
+	"bytes"
+	"embed"
+	"fmt"
+	"strconv"
+	"strings"
+	"text/template"
+)
+
+// The templates use [[ ]] delimiters because the generated Go code is full of
+// literal braces (struct literals, table tests).
+//
+//go:embed resourcetemplates/*.tmpl
+var resourceTemplates embed.FS
+
+type renderedSource struct {
+	dir     string // application-relative directory, slash separated
+	suffix  string // appended to the resource name: ".go" or "_test.go"
+	content string
+}
+
+type renderedResource struct {
+	migrationUp   string
+	migrationDown string
+	sources       []renderedSource
+}
+
+// resourceView is everything the templates read. All derived names and SQL
+// are computed here so the templates stay declarative.
+type resourceView struct {
+	Name        string // product
+	Plural      string // products
+	Title       string // Product
+	PluralTitle string // Products
+	Module      string
+	Tenant      bool
+	Identity    bool
+	Database    string
+	Postgres    bool
+	MySQL       bool
+	SQLite      bool
+	Fields      []fieldView
+	SQL         sqlStatements
+
+	HasText      bool // a string or text field exists (validation helpers)
+	HasString    bool
+	HasTextType  bool
+	HasTime      bool
+	HasOptional  bool
+	HasValidated bool
+}
+
+type fieldView struct {
+	resourceField
+	Title      string // PriceCents
+	Normalizer string // normalizeProductPriceCents
+	Err        string // ErrInvalidProductPriceCents
+	Message    string // public error message
+	Resource   string // Product
+}
+
+func (f fieldView) IsString() bool { return f.Type == "string" }
+func (f fieldView) IsText() bool   { return f.Type == "text" }
+func (f fieldView) IsInt() bool    { return f.Type == "int" }
+func (f fieldView) IsBool() bool   { return f.Type == "bool" }
+func (f fieldView) IsTime() bool   { return f.Type == "time" }
+func (f fieldView) IsUUID() bool   { return f.Type == "uuid" }
+
+// Validated reports whether the domain checks values of this field's type
+// beyond what JSON decoding already guarantees.
+func (f fieldView) Validated() bool { return !f.IsInt() && !f.IsBool() }
+
+// GoType is the Go type of one value.
+func (f fieldView) GoType() string {
+	switch f.Type {
+	case "string", "text":
+		return "string"
+	case "int":
+		return "int64"
+	case "bool":
+		return "bool"
+	case "time":
+		return "time.Time"
+	default:
+		return "uuid.UUID"
+	}
+}
+
+// FieldType is the Go type in the entity and the request structs: a pointer
+// for optional fields.
+func (f fieldView) FieldType() string {
+	if f.Optional {
+		return "*" + f.GoType()
+	}
+	return f.GoType()
+}
+
+func newResourceView(spec resourceSpec) resourceView {
+	title := exportedName(spec.Name)
+	view := resourceView{
+		Name: spec.Name, Plural: spec.Plural, Title: title, PluralTitle: exportedName(spec.Plural),
+		Module: spec.Module, Tenant: spec.TenantScoped, Identity: spec.Identity, Database: spec.Database,
+		Postgres: spec.Database == "postgres", MySQL: spec.Database == "mysql", SQLite: spec.Database == "sqlite",
+	}
+	for _, field := range spec.Fields {
+		fieldTitle := exportedName(field.Name)
+		item := fieldView{
+			resourceField: field, Title: fieldTitle, Resource: title,
+			Normalizer: "normalize" + title + fieldTitle,
+			Err:        "ErrInvalid" + title + fieldTitle,
+		}
+		item.Message = fieldMessage(item)
+		view.Fields = append(view.Fields, item)
+		view.HasString = view.HasString || field.Type == "string"
+		view.HasTextType = view.HasTextType || field.Type == "text"
+		view.HasTime = view.HasTime || field.Type == "time"
+		view.HasOptional = view.HasOptional || field.Optional
+		view.HasValidated = view.HasValidated || item.Validated()
+	}
+	view.HasText = view.HasString || view.HasTextType
+	view.SQL = buildStatements(view)
+	return view
+}
+
+func fieldMessage(f fieldView) string {
+	required := ""
+	if !f.Optional {
+		required = " (required)"
+	}
+	switch f.Type {
+	case "string":
+		if f.Optional {
+			return f.Name + " must be at most 255 characters of single-line text"
+		}
+		return f.Name + " must be 1 to 255 characters of single-line text"
+	case "text":
+		if f.Optional {
+			return f.Name + " must be text of at most 65535 bytes"
+		}
+		return f.Name + " must be non-blank text of at most 65535 bytes"
+	case "int":
+		return f.Name + " must be an integer" + required
+	case "bool":
+		return f.Name + " must be true or false" + required
+	case "time":
+		return f.Name + " must be an RFC 3339 timestamp between the years 1000 and 9999" + required
+	default:
+		return f.Name + " must be a UUIDv7" + required
+	}
+}
+
+// sampleExpr is a valid Go expression of the field's value type, distinct for
+// distinct n. Times are whole microseconds in UTC so every database stores
+// them exactly.
+func sampleExpr(f fieldView, n int) string {
+	switch f.Type {
+	case "string":
+		return strconv.Quote(strings.ReplaceAll(f.Name, "_", " ") + " " + strconv.Itoa(n))
+	case "text":
+		return strconv.Quote("Text for " + f.Name + " " + strconv.Itoa(n) + ".\nSecond line.")
+	case "int":
+		return "int64(" + strconv.Itoa(1000+n) + ")"
+	case "bool":
+		return strconv.FormatBool(n%2 == 1)
+	case "time":
+		return fmt.Sprintf("time.Date(2026, time.January, %d, 12, 30, 15, 123456000, time.UTC)", 1+n%28)
+	default:
+		return "uuid.MustNew()"
+	}
+}
+
+// fieldValue is the sample as an assignable value: new(...) for optional
+// fields.
+func fieldValue(f fieldView, n int) string {
+	if f.Optional {
+		return "new(" + sampleExpr(f, n) + ")"
+	}
+	return sampleExpr(f, n)
+}
+
+// SampleInput lists `Field: value,` lines for a domain.<Title>Input literal.
+// Optional fields are set only for odd n unless all is true, so tests cover
+// both NULL and non-NULL columns.
+func (v resourceView) SampleInput(n int, all bool) string {
+	var out strings.Builder
+	for _, f := range v.Fields {
+		if f.Optional && !all && n%2 == 0 {
+			continue
+		}
+		fmt.Fprintf(&out, "%s: %s,\n", f.Title, fieldValue(f, n))
+	}
+	return out.String()
+}
+
+// SampleBody lists `"json_name": value,` lines for a map[string]any request
+// body with the same rules as SampleInput.
+func (v resourceView) SampleBody(n int, all bool) string {
+	var out strings.Builder
+	for _, f := range v.Fields {
+		if f.Optional && !all && n%2 == 0 {
+			continue
+		}
+		fmt.Fprintf(&out, "%q: %s,\n", f.Name, sampleExpr(f, n))
+	}
+	return out.String()
+}
+
+// SampleChanges lists `Field: &value,` lines for a domain.<Title>Changes
+// literal that changes every field.
+func (v resourceView) SampleChanges(n int) string {
+	var out strings.Builder
+	for _, f := range v.Fields {
+		fmt.Fprintf(&out, "%s: new(%s),\n", f.Title, sampleExpr(f, n))
+	}
+	return out.String()
+}
+
+// Literal wraps expr in new(...) for optional fields, so it is assignable to
+// the entity and input field.
+func (f fieldView) Literal(expr string) string {
+	if f.Optional {
+		return "new(" + expr + ")"
+	}
+	return expr
+}
+
+// SampleExpr is a sample value of the field's value type.
+func (f fieldView) SampleExpr(n int) string { return sampleExpr(f, n) }
+
+// SampleValue is a sample assignable to the entity or input field.
+func (f fieldView) SampleValue(n int) string { return fieldValue(f, n) }
+
+// Access dereferences an optional field of the entity named by prefix.
+func (f fieldView) Access(prefix string) string {
+	if f.Optional {
+		return "*" + prefix + "." + f.Title
+	}
+	return prefix + "." + f.Title
+}
+
+// invalidCase is a value of Expr (a Go expression of the field's value type)
+// that the domain must reject.
+type invalidCase struct {
+	Name  string
+	Field fieldView
+	Expr  string
+}
+
+// InvalidCases lists values every field's validation must reject.
+func (v resourceView) InvalidCases() []invalidCase {
+	var cases []invalidCase
+	for _, f := range v.Fields {
+		add := func(label, expr string) {
+			cases = append(cases, invalidCase{Name: f.Name + " " + label, Field: f, Expr: expr})
+		}
+		switch f.Type {
+		case "string":
+			if !f.Optional {
+				add("empty", `""`)
+				add("blank", `"   "`)
+			}
+			add("too long", `strings.Repeat("a", 256)`)
+			add("newline", `"a\nb"`)
+			add("NUL", `"a\x00b"`)
+			add("invalid UTF-8", `"\xff"`)
+		case "text":
+			if !f.Optional {
+				add("empty", `""`)
+				add("blank", `" \n\t "`)
+			}
+			add("too long", `strings.Repeat("a", 65536)`)
+			add("NUL", `"a\x00b"`)
+			add("invalid UTF-8", `"\xff"`)
+		case "time":
+			add("zero", `time.Time{}`)
+			add("year before 1000", `time.Date(999, time.December, 31, 23, 59, 59, 0, time.UTC)`)
+			add("year after 9999", `time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)`)
+		case "uuid":
+			add("zero", `uuid.UUID{}`)
+			add("not version 7", `uuid.UUID{6: 0x40, 8: 0x80}`)
+		}
+	}
+	return cases
+}
+
+// RawInsert is a hand-written INSERT of one row with only the required
+// fields, for tests that talk to the table without the repository. It binds
+// the id, the tenant (when scoped), the required fields, the version and both
+// timestamps in that order; RawInsertArgs lists their Go expressions, with the
+// tenant as tenantID.
+func (v resourceView) RawInsert() string {
+	names, placeholders := v.rawInsertColumns()
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", v.Plural, strings.Join(names, ", "), strings.Join(placeholders, ", "))
+}
+
+func (v resourceView) rawInsertColumns() (names, placeholders []string) {
+	add := func(name string) {
+		names = append(names, name)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(names)))
+	}
+	add("id")
+	if v.Tenant {
+		add("tenant_id")
+	}
+	for _, f := range v.RequiredFields() {
+		add(f.Name)
+	}
+	add("version")
+	add("created_at")
+	add("updated_at")
+	return names, placeholders
+}
+
+// RawInsertArgs lists the Go argument expressions for RawInsert.
+func (v resourceView) RawInsertArgs() string {
+	args := []string{"uuid.MustNew()"}
+	if v.Tenant {
+		args = append(args, "tenantID")
+	}
+	for _, f := range v.RequiredFields() {
+		args = append(args, sampleExpr(f, 1))
+	}
+	return strings.Join(append(args, "1", "time.Now().UTC()", "time.Now().UTC()"), ", ")
+}
+
+// wrongType is a JSON member whose value has the wrong JSON type for its field.
+type wrongType struct {
+	Field   fieldView
+	Literal string
+}
+
+// WrongType picks the first field for which a wrongly typed JSON value is
+// reported as invalid_json. Times and UUIDs are JSON strings, so a string
+// cannot be the wrong type for them.
+func (v resourceView) WrongType() *wrongType {
+	for _, f := range v.Fields {
+		switch f.Type {
+		case "string", "text":
+			return &wrongType{Field: f, Literal: "123"}
+		case "int", "bool":
+			return &wrongType{Field: f, Literal: `"text"`}
+		}
+	}
+	return nil
+}
+
+// FirstRequired is the first required field, or nil.
+func (v resourceView) FirstRequired() *fieldView {
+	for _, f := range v.Fields {
+		if !f.Optional {
+			return &f
+		}
+	}
+	return nil
+}
+
+// OptionalFields returns the fields declared with a trailing ?.
+func (v resourceView) OptionalFields() []fieldView {
+	var fields []fieldView
+	for _, f := range v.Fields {
+		if f.Optional {
+			fields = append(fields, f)
+		}
+	}
+	return fields
+}
+
+// RequiredFields returns the fields that must be present.
+func (v resourceView) RequiredFields() []fieldView {
+	var fields []fieldView
+	for _, f := range v.Fields {
+		if !f.Optional {
+			fields = append(fields, f)
+		}
+	}
+	return fields
+}
+
+// Fixed namespaces the template engine exposes.
+var resourceTemplateFuncs = template.FuncMap{
+	"quote": strconv.Quote,
+	"add":   func(a, b int) int { return a + b },
+}
+
+func renderTemplate(name string, data any) (string, error) {
+	text, err := resourceTemplates.ReadFile("resourcetemplates/" + name)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := template.New(name).Delims("[[", "]]").Funcs(resourceTemplateFuncs).Option("missingkey=error").Parse(string(text))
+	if err != nil {
+		return "", fmt.Errorf("parse template %s: %w", name, err)
+	}
+	var out bytes.Buffer
+	if err := parsed.Execute(&out, data); err != nil {
+		return "", fmt.Errorf("render template %s: %w", name, err)
+	}
+	return out.String(), nil
+}
+
+// renderResource renders the migration pair and every Go source file.
+func renderResource(spec resourceSpec) (renderedResource, error) {
+	view := newResourceView(spec)
+	var result renderedResource
+	result.migrationUp, result.migrationDown = renderMigration(view)
+
+	persistence := "persistence_sql.go.tmpl"
+	if view.Postgres {
+		persistence = "persistence_postgres.go.tmpl"
+	}
+	for _, source := range []struct {
+		dir, suffix, template string
+	}{
+		{"app/domain", ".go", "domain.go.tmpl"},
+		{"app/domain", "_test.go", "domain_test.go.tmpl"},
+		{"app/application", ".go", "application.go.tmpl"},
+		{"app/application", "_test.go", "application_test.go.tmpl"},
+		{"app/adapters/persistence", ".go", persistence},
+		{"app/adapters/persistence", "_test.go", "persistence_test.go.tmpl"},
+		{"app/adapters/httpapi", ".go", "httpapi.go.tmpl"},
+		{"app/adapters/httpapi", "_test.go", "httpapi_test.go.tmpl"},
+	} {
+		content, err := renderTemplate(source.template, view)
+		if err != nil {
+			return renderedResource{}, err
+		}
+		result.sources = append(result.sources, renderedSource{dir: source.dir, suffix: source.suffix, content: content})
+	}
+	return result, nil
+}

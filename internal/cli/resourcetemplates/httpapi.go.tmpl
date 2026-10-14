@@ -1,0 +1,266 @@
+package httpapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/fabriciobonjorno/forge-go/pagination"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/fabriciobonjorno/forge-go/web"
+)
+
+const (
+	[[.Plural]]Path            = "/v1/[[.Plural]]"
+	[[.Plural]]ReadPermission  = "[[.Plural]]:read"
+	[[.Plural]]WritePermission = "[[.Plural]]:write"
+)
+
+// [[.Title]]Router is where Register[[.PluralTitle]] mounts the routes; *forge.App satisfies it.
+type [[.Title]]Router interface {
+	Handle(pattern string, handler http.Handler) error
+}
+
+// [[.Title]]Protect wraps next so that only callers holding permission reach it.
+// The application decides how: the PostgreSQL identity wiring authenticates the
+// bearer token and requires the permission. Register[[.PluralTitle]] never mounts a
+// route without it, so these endpoints cannot be public by accident.
+type [[.Title]]Protect func(permission string, next http.Handler) (http.Handler, error)
+
+// Register[[.PluralTitle]] mounts the [[.Name]] endpoints. Reads require
+// "[[.Plural]]:read" and writes "[[.Plural]]:write".
+func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.Title]]Service, protect [[.Title]]Protect) error {
+	if router == nil || service == nil {
+		return errors.New("httpapi: router and [[.Name]] service are required")
+	}
+	if protect == nil {
+		return errors.New("httpapi: a protect function is required: [[.Name]] routes are never public")
+	}
+	h := [[.Name]]Handlers{service: service}
+	routes := []struct {
+		pattern    string
+		permission string
+		handler    http.HandlerFunc
+	}{
+		{"POST " + [[.Plural]]Path, [[.Plural]]WritePermission, h.create},
+		{"GET " + [[.Plural]]Path, [[.Plural]]ReadPermission, h.list},
+		{"GET " + [[.Plural]]Path + "/{id}", [[.Plural]]ReadPermission, h.get},
+		{"PATCH " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.update},
+		{"DELETE " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.delete},
+	}
+	for _, route := range routes {
+		protected, err := protect(route.permission, route.handler)
+		if err != nil {
+			return fmt.Errorf("protect %s: %w", route.pattern, err)
+		}
+		if protected == nil {
+			return fmt.Errorf("protect %s: the protect function returned no handler", route.pattern)
+		}
+		if err := router.Handle(route.pattern, protected); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type [[.Name]]Handlers struct {
+	service *application.[[.Title]]Service
+}
+
+// [[.Name]]CreateRequest uses pointers so a missing member is reported instead of
+// silently becoming a zero value.
+type [[.Name]]CreateRequest struct {
+[[- range .Fields]]
+	[[.Title]] *[[.GoType]] `json:"[[.Name]]"`
+[[- end]]
+}
+
+func (b [[.Name]]CreateRequest) input() (domain.[[.Title]]Input, error) {
+	var input domain.[[.Title]]Input
+[[- range .Fields]]
+[[- if .Optional]]
+	input.[[.Title]] = b.[[.Title]]
+[[- else]]
+	if b.[[.Title]] == nil {
+		return domain.[[$.Title]]Input{}, domain.[[.Err]]
+	}
+	input.[[.Title]] = *b.[[.Title]]
+[[- end]]
+[[- end]]
+	return input, nil
+}
+
+// [[.Name]]PatchField records whether a JSON member was present and whether it
+// was null, which a plain pointer cannot tell apart from absent.
+type [[.Name]]PatchField[T any] struct {
+	Set   bool
+	Value *T
+}
+
+func (f *[[.Name]]PatchField[T]) UnmarshalJSON(data []byte) error {
+	f.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		f.Value = nil
+		return nil
+	}
+	var value T
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	f.Value = &value
+	return nil
+}
+
+// [[.Name]]PatchRequest carries the version the client last read and only the
+// fields to change. A member left out stays as it is; null clears an optional
+// field and is rejected for a required one.
+type [[.Name]]PatchRequest struct {
+	Version int `json:"version"`
+[[- range .Fields]]
+	[[.Title]] [[printf "%sPatchField[%s]" $.Name .GoType]] `json:"[[.Name]]"`
+[[- end]]
+}
+
+func (b [[.Name]]PatchRequest) changes() (domain.[[.Title]]Changes, error) {
+	var changes domain.[[.Title]]Changes
+[[- range .Fields]]
+	if b.[[.Title]].Set {
+[[- if .Optional]]
+		if b.[[.Title]].Value == nil {
+			changes.Clear[[.Title]] = true
+		} else {
+			changes.[[.Title]] = b.[[.Title]].Value
+		}
+[[- else]]
+		if b.[[.Title]].Value == nil {
+			return domain.[[$.Title]]Changes{}, domain.[[.Err]]
+		}
+		changes.[[.Title]] = b.[[.Title]].Value
+[[- end]]
+	}
+[[- end]]
+	return changes, nil
+}
+
+type [[.Name]]Response struct {
+	ID uuid.UUID `json:"id"`
+[[- range .Fields]]
+	[[.Title]] [[.FieldType]] `json:"[[.Name]]"`
+[[- end]]
+	Version   int       `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func new[[.Title]]Response(entity domain.[[.Title]]) [[.Name]]Response {
+	return [[.Name]]Response{
+		ID: entity.ID,
+[[- range .Fields]]
+		[[.Title]]: entity.[[.Title]],
+[[- end]]
+		Version:   entity.Version,
+		CreatedAt: entity.CreatedAt,
+		UpdatedAt: entity.UpdatedAt,
+	}
+}
+
+func (h [[.Name]]Handlers) create(w http.ResponseWriter, r *http.Request) {
+	var body [[.Name]]CreateRequest
+	if err := web.DecodeJSON(r, &body); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	input, err := body.input()
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	entity, err := h.service.Create(r.Context(), input)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	w.Header().Set("Location", [[.Plural]]Path+"/"+entity.ID.String())
+	web.JSON(w, http.StatusCreated, new[[.Title]]Response(entity))
+}
+
+func (h [[.Name]]Handlers) list(w http.ResponseWriter, r *http.Request) {
+	request, err := pagination.FromQuery(r.URL.Query())
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	page, err := h.service.List(r.Context(), request)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	items := make([][[.Name]]Response, len(page.Items))
+	for i, entity := range page.Items {
+		items[i] = new[[.Title]]Response(entity)
+	}
+	web.JSON(w, http.StatusOK, [[printf "pagination.Page[%sResponse]" .Name]]{Items: items, NextCursor: page.NextCursor})
+}
+
+func (h [[.Name]]Handlers) get(w http.ResponseWriter, r *http.Request) {
+	id, err := domain.Parse[[.Title]]ID(r.PathValue("id"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	entity, err := h.service.Get(r.Context(), id)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	web.JSON(w, http.StatusOK, new[[.Title]]Response(entity))
+}
+
+func (h [[.Name]]Handlers) update(w http.ResponseWriter, r *http.Request) {
+	id, err := domain.Parse[[.Title]]ID(r.PathValue("id"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	var body [[.Name]]PatchRequest
+	if err := web.DecodeJSON(r, &body); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	changes, err := body.changes()
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	entity, err := h.service.Update(r.Context(), id, body.Version, changes)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	web.JSON(w, http.StatusOK, new[[.Title]]Response(entity))
+}
+
+// delete takes the version the client last read as ?version=N.
+func (h [[.Name]]Handlers) delete(w http.ResponseWriter, r *http.Request) {
+	id, err := domain.Parse[[.Title]]ID(r.PathValue("id"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	version, err := strconv.Atoi(r.URL.Query().Get("version"))
+	if err != nil {
+		web.Error(w, r, domain.ErrInvalid[[.Title]]Version)
+		return
+	}
+	if err := h.service.Delete(r.Context(), id, version); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

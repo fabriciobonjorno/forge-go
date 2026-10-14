@@ -1,0 +1,584 @@
+package cli
+
+import (
+	"bytes"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestParseResourceArgs(t *testing.T) {
+	t.Parallel()
+	valid := []struct {
+		name         string
+		args         []string
+		wantName     string
+		wantPlural   string
+		wantTenant   bool
+		wantDryRun   bool
+		wantFields   []resourceField
+		wantErrorFor string
+	}{
+		{
+			name: "tenant scoped", args: []string{"product", "name:string", "price_cents:int", "--tenant-scoped"},
+			wantName: "product", wantPlural: "products", wantTenant: true,
+			wantFields: []resourceField{{"name", "string", false}, {"price_cents", "int", false}},
+		},
+		{
+			name: "flags may come first and last", args: []string{"--dry-run", "--global", "category", "title:text?", "--plural", "categories"},
+			wantName: "category", wantPlural: "categories", wantDryRun: true,
+			wantFields: []resourceField{{"title", "text", true}},
+		},
+		{
+			name: "plural with equals", args: []string{"person", "name:string", "--global", "--plural=people"},
+			wantName: "person", wantPlural: "people",
+			wantFields: []resourceField{{"name", "string", false}},
+		},
+		{
+			name: "every type", args: []string{"order_item", "a:string", "b:text?", "c:int", "d:bool?", "e:time", "f:uuid?", "--tenant-scoped"},
+			wantName: "order_item", wantPlural: "order_items", wantTenant: true,
+			wantFields: []resourceField{{"a", "string", false}, {"b", "text", true}, {"c", "int", false}, {"d", "bool", true}, {"e", "time", false}, {"f", "uuid", true}},
+		},
+	}
+	for _, test := range valid {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseResourceArgs(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Name != test.wantName || got.Plural != test.wantPlural || got.TenantScoped != test.wantTenant || got.DryRun != test.wantDryRun {
+				t.Fatalf("got %+v", got)
+			}
+			if !slices.Equal(got.Fields, test.wantFields) {
+				t.Fatalf("fields = %+v, want %+v", got.Fields, test.wantFields)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no scope", []string{"product", "name:string"}, "choose a scope"},
+		{"both scopes", []string{"product", "name:string", "--global", "--tenant-scoped"}, "mutually exclusive"},
+		{"no name", []string{"--global"}, "usage:"},
+		{"no fields", []string{"product", "--global"}, "at least one field"},
+		{"unknown flag", []string{"product", "name:string", "--global", "--force"}, "unknown flag"},
+		{"plural without value", []string{"product", "name:string", "--global", "--plural"}, "--plural needs a value"},
+		{"plural twice", []string{"product", "name:string", "--global", "--plural", "a", "--plural", "b"}, "more than once"},
+		{"dry run twice", []string{"product", "name:string", "--global", "--dry-run", "--dry-run"}, "more than once"},
+		{"uppercase name", []string{"Product", "name:string", "--global"}, "singular snake_case"},
+		{"hyphenated name", []string{"order-item", "name:string", "--global"}, "singular snake_case"},
+		{"double underscore", []string{"order__item", "name:string", "--global"}, "singular snake_case"},
+		{"digit first", []string{"1product", "name:string", "--global"}, "singular snake_case"},
+		{"name too long", []string{strings.Repeat("a", 41), "name:string", "--global"}, "singular snake_case"},
+		{"test suffix", []string{"widget_test", "name:string", "--global"}, "build constraint"},
+		{"os suffix", []string{"widget_linux", "name:string", "--global"}, "build constraint"},
+		{"plural equals name", []string{"sheep", "name:string", "--global", "--plural", "sheep"}, "must differ"},
+		{"plural not snake", []string{"person", "name:string", "--global", "--plural", "People"}, "snake_case"},
+		{"plural reserved word", []string{"group", "name:string", "--global"}, "reserved SQL word"},
+		{"plural forge prefix", []string{"thing", "name:string", "--global", "--plural", "forge_things"}, "reserved for Forge"},
+		{"missing type", []string{"product", "name", "--global"}, "name:type"},
+		{"unknown type", []string{"product", "name:varchar", "--global"}, "unsupported type"},
+		{"float type", []string{"product", "price:float", "--global"}, "unsupported type"},
+		{"decimal type", []string{"product", "price:decimal", "--global"}, "unsupported type"},
+		{"uppercase field", []string{"product", "Name:string", "--global"}, "field name"},
+		{"reserved id", []string{"product", "id:uuid", "--global"}, "reserved"},
+		{"reserved tenant_id", []string{"product", "tenant_id:uuid", "--tenant-scoped"}, "reserved"},
+		{"reserved version", []string{"product", "version:int", "--global"}, "reserved"},
+		{"reserved created_at", []string{"product", "created_at:time", "--global"}, "reserved"},
+		{"reserved updated_at", []string{"product", "updated_at:time", "--global"}, "reserved"},
+		{"sql keyword field", []string{"product", "order:int", "--global"}, "reserved SQL word"},
+		{"duplicate field", []string{"product", "name:string", "name:text", "--global"}, "declared twice"},
+		{"go name collision", []string{"product", "i_d:int", "--global"}, "collides"},
+		{"clear flag collision", []string{"product", "note:text?", "clear_note:bool", "--global"}, "Clear"},
+		{"identifier too long", []string{strings.Repeat("a", 38), strings.Repeat("b", 38) + ":string", "--global"}, "too long"},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := parseResourceArgs(test.args)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestPluralize(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]string{
+		"product":    "products",
+		"category":   "categories",
+		"company":    "companies",
+		"day":        "days",
+		"key":        "keys",
+		"status":     "statuses",
+		"box":        "boxes",
+		"match":      "matches",
+		"dish":       "dishes",
+		"order_item": "order_items",
+		"policy":     "policies",
+	} {
+		if got := pluralize(name); got != want {
+			t.Errorf("pluralize(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestExportedName(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]string{"product": "Product", "product_line": "ProductLine", "order_items": "OrderItems", "a1_b2": "A1B2", "owner_id": "OwnerID", "api_key": "APIKey", "uuid": "UUID", "identity": "Identity", "base_url": "BaseURL"} {
+		if got := exportedName(name); got != want {
+			t.Errorf("exportedName(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// resourceProject is a minimal Forge application directory: enough for the
+// generator, which only reads go.mod, the environment files and cmd/.
+func resourceProject(t *testing.T, databaseURL string) string {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\n\ngo 1.27.1\n")
+	writeFile(t, filepath.Join(root, "db", "migrations", ".keep"), "")
+	if databaseURL != "" {
+		writeFile(t, filepath.Join(root, ".env.development"), "FORGE_DATABASE_URL="+databaseURL+"\n")
+	}
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nimport _ \"github.com/fabriciobonjorno/forge-go/auth/postgres\"\n\nfunc main() {}\n")
+	return root
+}
+
+var resourceDatabases = []struct{ name, url string }{
+	{"postgres", "postgres://u:p@localhost/db"},
+	{"mysql", "mysql://u:p@localhost/db"},
+	{"sqlite", "sqlite:storage/development.db"},
+}
+
+func runResource(root string, args ...string) (string, error) {
+	var out bytes.Buffer
+	err := runGenerateEnv(append([]string{"resource"}, args...), &out, root, nil, time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC))
+	return out.String(), err
+}
+
+func snapshotTree(t *testing.T, root string) []string {
+	t.Helper()
+	var entries []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, _ := filepath.Rel(root, path)
+		entries = append(entries, relative)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestGenerateResourceDryRunWritesNothing(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "postgres://u:p@localhost/db")
+	before := snapshotTree(t, root)
+	output, err := runResource(root, "product", "name:string", "--tenant-scoped", "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := snapshotTree(t, root); !slices.Equal(before, after) {
+		t.Fatalf("--dry-run changed the project:\nbefore %v\nafter  %v", before, after)
+	}
+	for _, want := range []string{
+		"would create  db/migrations/20261014120000_create_products.up.sql",
+		"would create  db/migrations/20261014120000_create_products.down.sql",
+		"would create  " + filepath.Join("app", "domain", "product.go"),
+		"would create  " + filepath.Join("app", "domain", "product_test.go"),
+		"would create  " + filepath.Join("app", "application", "product.go"),
+		"would create  " + filepath.Join("app", "adapters", "persistence", "product_test.go"),
+		"would create  " + filepath.Join("app", "adapters", "httpapi", "product.go"),
+		"auth.Require",
+		"httpapi.RegisterProducts(app, products, protect)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("dry-run output is missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "  create  ") {
+		t.Errorf("dry-run claims to have created files:\n%s", output)
+	}
+}
+
+func TestGenerateResourceWritesFiles(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "mysql://u:p@localhost/db")
+	output, err := runResource(root, "order_item", "sku:string", "quantity:int", "--tenant-scoped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"db/migrations/20261014120000_create_order_items.up.sql",
+		"db/migrations/20261014120000_create_order_items.down.sql",
+		"app/domain/order_item.go", "app/domain/order_item_test.go",
+		"app/application/order_item.go", "app/application/order_item_test.go",
+		"app/adapters/persistence/order_item.go", "app/adapters/persistence/order_item_test.go",
+		"app/adapters/httpapi/order_item.go", "app/adapters/httpapi/order_item_test.go",
+	} {
+		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			t.Errorf("%s: %v", path, err)
+			continue
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v, want 0600", path, info.Mode().Perm())
+		}
+		if !strings.Contains(output, "  create  "+filepath.FromSlash(path)) {
+			t.Errorf("output does not list %s:\n%s", path, output)
+		}
+	}
+	// MySQL has no Forge identity: the printed guard must deny, never pass through.
+	if strings.Contains(output, "auth.Require") || !strings.Contains(output, "permission_denied") || strings.Contains(output, "return next, nil") {
+		t.Errorf("non-identity wiring must print a deny-all guard:\n%s", output)
+	}
+	if !strings.Contains(output, "tenancy.WithContext") {
+		t.Errorf("tenant-scoped wiring must explain how the tenant reaches the context:\n%s", output)
+	}
+
+	// A second resource coexists; the migration version moves past the first.
+	if _, err := runResource(root, "category", "name:string", "--global"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "db", "migrations", "20261014120001_create_categories.up.sql")); err != nil {
+		t.Fatalf("second migration was not bumped past the first: %v", err)
+	}
+}
+
+func TestGenerateResourceRefusesToOverwriteAnyFile(t *testing.T) {
+	t.Parallel()
+	for _, existing := range []string{
+		"app/domain/product.go", "app/domain/product_test.go",
+		"app/application/product.go", "app/application/product_test.go",
+		"app/adapters/persistence/product.go", "app/adapters/persistence/product_test.go",
+		"app/adapters/httpapi/product.go", "app/adapters/httpapi/product_test.go",
+	} {
+		t.Run(existing, func(t *testing.T) {
+			t.Parallel()
+			root := resourceProject(t, "sqlite:storage/development.db")
+			writeFile(t, filepath.Join(root, filepath.FromSlash(existing)), "package x // hand-written\n")
+			before := snapshotTree(t, root)
+			_, err := runResource(root, "product", "name:string", "--global")
+			if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") || !strings.Contains(err.Error(), filepath.FromSlash(existing)) {
+				t.Fatalf("err = %v, want a refusal naming %s", err, existing)
+			}
+			if after := snapshotTree(t, root); !slices.Equal(before, after) {
+				t.Fatalf("a refused run left files behind:\nbefore %v\nafter  %v", before, after)
+			}
+			body, _ := os.ReadFile(filepath.Join(root, filepath.FromSlash(existing)))
+			if string(body) != "package x // hand-written\n" {
+				t.Fatalf("existing file was modified: %q", body)
+			}
+		})
+	}
+}
+
+func TestGenerateResourceRejectsSymlinks(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "sqlite:storage/development.db")
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "app", "domain")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := runResource(root, "product", "name:string", "--global"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want a symlink refusal", err)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("the generator wrote through a symlink: %v", entries)
+	}
+}
+
+func TestGenerateResourceNeedsADatabase(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct{ url, want string }{
+		"none":    {"", "no database"},
+		"unknown": {"oracle://u:p@localhost/db", "supported database"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := resourceProject(t, test.url)
+			before := snapshotTree(t, root)
+			_, err := runResource(root, "product", "name:string", "--global")
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, test.want)
+			}
+			if after := snapshotTree(t, root); !slices.Equal(before, after) {
+				t.Fatal("a failed run changed the project")
+			}
+		})
+	}
+	if _, err := runResource(t.TempDir(), "product", "name:string", "--global"); err == nil || !strings.Contains(err.Error(), "go.mod") {
+		t.Fatalf("outside an application: err = %v, want a go.mod error", err)
+	}
+}
+
+func TestGenerateResourceReadsTheDatabaseFromTheProjectEnvironment(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "postgres://u:p@localhost/db")
+	// The process environment wins over the env files, as everywhere in Forge.
+	var out bytes.Buffer
+	err := runGenerateEnv([]string{"resource", "product", "name:string", "--global"}, &out, root,
+		[]string{"FORGE_DATABASE_URL=sqlite:storage/other.db"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := os.ReadFile(filepath.Join(root, "db", "migrations", filepath.Base(firstMatch(t, root, "*_create_products.up.sql"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(up), "STRICT") {
+		t.Fatalf("expected SQLite DDL from the process environment:\n%s", up)
+	}
+}
+
+func firstMatch(t *testing.T, root, pattern string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(root, "db", "migrations", pattern))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("glob %s = %v, %v", pattern, matches, err)
+	}
+	return matches[0]
+}
+
+func TestGenerateResourceRefusesDeclarationConflicts(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "sqlite:storage/development.db")
+	// Another resource whose generated names collide with product's:
+	// product_input would declare ProductInput twice in package domain.
+	if _, err := runResource(root, "product", "name:string", "--global"); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, root)
+	_, err := runResource(root, "product_input", "name:string", "--global")
+	if err == nil || !strings.Contains(err.Error(), "already declares") {
+		t.Fatalf("err = %v, want a declaration conflict", err)
+	}
+	if after := snapshotTree(t, root); !slices.Equal(before, after) {
+		t.Fatal("a conflicting run left files behind")
+	}
+}
+
+func TestResourcePermissionsAreOnlySeededWithForgeIdentity(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "postgres://u:p@localhost/db")
+	if _, err := runResource(root, "product", "name:string", "--tenant-scoped"); err != nil {
+		t.Fatal(err)
+	}
+	up := readFile(t, firstMatch(t, root, "*_create_products.up.sql"))
+	down := readFile(t, firstMatch(t, root, "*_create_products.down.sql"))
+	for _, want := range []string{"INSERT INTO forge_permissions", "'products:read'", "'products:write'", "ON CONFLICT (name) DO NOTHING"} {
+		if !strings.Contains(up, want) {
+			t.Errorf("up migration is missing %q:\n%s", want, up)
+		}
+	}
+	// Grants go before the permissions they reference, and both before the table.
+	grants := strings.Index(down, "DELETE FROM forge_role_permissions")
+	permissions := strings.Index(down, "DELETE FROM forge_permissions")
+	table := strings.Index(down, "DROP TABLE products")
+	if grants < 0 || permissions < grants || table < permissions {
+		t.Errorf("down migration order is wrong:\n%s", down)
+	}
+
+	// A PostgreSQL application that does not compose the identity migrations
+	// has no forge_permissions table to seed.
+	bare := resourceProject(t, "postgres://u:p@localhost/db")
+	writeFile(t, filepath.Join(bare, "cmd", "shop", "main.go"), "package main\n\nfunc main() {}\n")
+	output, err := runResource(bare, "product", "name:string", "--global")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(readFile(t, firstMatch(t, bare, "*_create_products.up.sql")), "forge_permissions") || strings.Contains(output, "auth.Require") {
+		t.Errorf("identity wiring generated for an application without identity:\n%s", output)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
+}
+
+// allTypes exercises every field type, required and optional.
+var allTypes = []resourceField{
+	{"name", "string", false}, {"summary", "string", true},
+	{"body", "text", false}, {"notes", "text", true},
+	{"quantity", "int", false}, {"limit_count", "int", true},
+	{"active", "bool", false}, {"featured", "bool", true},
+	{"released_at", "time", false}, {"retired_at", "time", true},
+	{"owner_id", "uuid", false}, {"parent_id", "uuid", true},
+}
+
+var minimalFields = []resourceField{{"count", "int", false}, {"enabled", "bool", true}}
+
+// TestResourceIdentifiersAreUUIDv7AndTypesAreExact is the guard for ADR 0021
+// rule 1 and 5: for every database and both scopes, the primary key (and the
+// tenant) use the database's UUID storage, the generated SQL and Go contain no
+// other identifier strategy, and no column is floating point or decimal.
+func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
+	t.Parallel()
+	forbidden := regexp.MustCompile(`(?i)\b(serial|bigserial|smallserial|auto_increment|autoincrement|gen_random_uuid|uuid_generate_v[0-9a-z]+|float|float4|float8|real|double|decimal|numeric|money)\b`)
+	mysqlUUIDFunction := regexp.MustCompile(`\bUUID\(\)`)
+	idColumn := map[string]*regexp.Regexp{
+		"postgres": regexp.MustCompile(`(?m)^\s+id\s+uuid PRIMARY KEY DEFAULT uuidv7\(\),?$`),
+		"mysql":    regexp.MustCompile(`(?m)^\s+id\s+CHAR\(36\) NOT NULL PRIMARY KEY,?$`),
+		"sqlite":   regexp.MustCompile(`(?m)^\s+id\s+TEXT NOT NULL PRIMARY KEY,?$`),
+	}
+	tenantColumn := map[string]*regexp.Regexp{
+		"postgres": regexp.MustCompile(`(?m)^\s+tenant_id\s+uuid NOT NULL,?$`),
+		"mysql":    regexp.MustCompile(`(?m)^\s+tenant_id\s+CHAR\(36\) NOT NULL,?$`),
+		"sqlite":   regexp.MustCompile(`(?m)^\s+tenant_id\s+TEXT NOT NULL,?$`),
+	}
+	for _, database := range resourceDatabases {
+		for _, tenant := range []bool{true, false} {
+			for name, fields := range map[string][]resourceField{"every type": allTypes, "minimal": minimalFields} {
+				t.Run(database.name+"/"+map[bool]string{true: "tenant", false: "global"}[tenant]+"/"+name, func(t *testing.T) {
+					t.Parallel()
+					spec := resourceSpec{
+						resourceRequest: resourceRequest{Name: "product", Plural: "products", Fields: fields, TenantScoped: tenant},
+						Module:          "example.com/shop", Database: database.name, Identity: database.name == "postgres",
+					}
+					rendered, err := renderResource(spec)
+					if err != nil {
+						t.Fatal(err)
+					}
+					up := rendered.migrationUp
+					if !idColumn[database.name].MatchString(up) {
+						t.Errorf("the id column is not the %s UUIDv7 storage:\n%s", database.name, up)
+					}
+					if tenant && !tenantColumn[database.name].MatchString(up) {
+						t.Errorf("tenant_id is not the %s UUID storage:\n%s", database.name, up)
+					}
+					if !tenant && strings.Contains(up, "tenant_id") {
+						t.Errorf("a global table has a tenant_id column:\n%s", up)
+					}
+					if database.name == "sqlite" && !strings.Contains(up, ") STRICT;") {
+						t.Errorf("SQLite table is not STRICT:\n%s", up)
+					}
+					texts := []string{up, rendered.migrationDown}
+					for _, source := range rendered.sources {
+						texts = append(texts, source.content)
+					}
+					for _, text := range texts {
+						if match := forbidden.FindString(text); match != "" {
+							t.Errorf("generated output contains %q", match)
+						}
+					}
+					if mysqlUUIDFunction.MatchString(up) {
+						t.Errorf("generated SQL calls UUID():\n%s", up)
+					}
+					for _, source := range rendered.sources {
+						if strings.Contains(source.content, "google/uuid") || strings.Contains(source.content, "uuid.NewString") {
+							t.Errorf("%s%s generates identifiers outside forge's uuid package", source.dir, source.suffix)
+						}
+					}
+					assertGoSourcesParse(t, rendered)
+				})
+			}
+		}
+	}
+}
+
+func assertGoSourcesParse(t *testing.T, rendered renderedResource) {
+	t.Helper()
+	for _, source := range rendered.sources {
+		formatted, err := format.Source([]byte(source.content))
+		if err != nil {
+			t.Errorf("%s%s does not format: %v", source.dir, source.suffix, err)
+			continue
+		}
+		if _, err := parser.ParseFile(token.NewFileSet(), "x.go", formatted, parser.AllErrors); err != nil {
+			t.Errorf("%s%s does not parse: %v", source.dir, source.suffix, err)
+		}
+	}
+}
+
+func TestResourceTenantScopeShapesTheGeneratedCode(t *testing.T) {
+	t.Parallel()
+	render := func(database string, tenant bool) renderedResource {
+		rendered, err := renderResource(resourceSpec{
+			resourceRequest: resourceRequest{Name: "product", Plural: "products", Fields: allTypes, TenantScoped: tenant},
+			Module:          "example.com/shop", Database: database, Identity: database == "postgres",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rendered
+	}
+	persistence := func(rendered renderedResource) string {
+		for _, source := range rendered.sources {
+			if source.dir == "app/adapters/persistence" && source.suffix == ".go" {
+				return source.content
+			}
+		}
+		t.Fatal("no persistence source")
+		return ""
+	}
+	for _, database := range []string{"postgres", "mysql", "sqlite"} {
+		scoped := persistence(render(database, true))
+		global := persistence(render(database, false))
+		if !strings.Contains(scoped, "tenancy.Require(ctx)") || !strings.Contains(scoped, "tenant_id = ") {
+			t.Errorf("%s tenant-scoped repository does not bind the tenant", database)
+		}
+		if strings.Contains(global, "tenancy") || strings.Contains(global, "tenant_id") {
+			t.Errorf("%s global repository mentions tenants", database)
+		}
+	}
+	if up := render("postgres", true).migrationUp; !strings.Contains(up, "FORCE ROW LEVEL SECURITY") || !strings.Contains(up, "CREATE POLICY products_tenant") ||
+		!strings.Contains(up, "WITH CHECK") || !strings.Contains(persistence(render("postgres", true)), "InTenantTx") {
+		t.Errorf("PostgreSQL tenant-scoped resources must enable forced RLS and run in InTenantTx:\n%s", up)
+	}
+	for _, database := range []string{"mysql", "sqlite"} {
+		if up := render(database, true).migrationUp; strings.Contains(up, "ROW LEVEL SECURITY") || !strings.Contains(up, "tenant_id, id") {
+			t.Errorf("%s: want an (tenant_id, id) index and no RLS:\n%s", database, up)
+		}
+	}
+	if up := render("postgres", false).migrationUp; strings.Contains(up, "ROW LEVEL SECURITY") {
+		t.Errorf("a global table has RLS:\n%s", up)
+	}
+}
+
+func TestResourceWiringNeverOpensTheRoutes(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		database string
+		identity bool
+	}{{"postgres", true}, {"postgres", false}, {"mysql", false}, {"sqlite", false}} {
+		spec := resourceSpec{
+			resourceRequest: resourceRequest{Name: "product", Plural: "products", TenantScoped: true},
+			Module:          "example.com/shop", Database: test.database, Identity: test.identity,
+		}
+		wiring := resourceWiring(spec)
+		if strings.Contains(wiring, "return next, nil") {
+			t.Errorf("%+v: the wiring passes requests through:\n%s", test, wiring)
+		}
+		if test.identity != strings.Contains(wiring, "auth.Require") {
+			t.Errorf("%+v: auth.Require presence does not follow Forge identity:\n%s", test, wiring)
+		}
+		if !strings.Contains(wiring, "httpapi.RegisterProducts(app, products, protect)") {
+			t.Errorf("%+v: wiring does not register the routes with a guard:\n%s", test, wiring)
+		}
+	}
+}

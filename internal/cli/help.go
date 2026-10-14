@@ -87,7 +87,23 @@ func currentCommandCatalog() commandCatalog {
 			Environment: runtimeEnvironment(),
 			Flags:       []flagDetail{{Name: "-steps", Value: "N", Default: "1", Description: "Number of migrations to revert."}},
 		},
-		{Name: "generate", Usage: "forge generate <migration|view|job> NAME [--dry-run]", Summary: "Generate or preview migrations, auto-escaped HTML views, or cancellation-aware job stubs without overwriting files.", SideEffects: []string{"filesystem_read", "filesystem_write"}, Examples: []string{"forge generate migration create_widgets --dry-run", "forge generate view welcome", "forge generate job cleanup --dry-run"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories."}, Flags: []flagDetail{{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."}}},
+		{
+			Name: "generate", Usage: "forge generate <migration|view|job|resource> NAME [field:type...] [flags]",
+			Summary:     "Generate or preview migrations, auto-escaped HTML views, cancellation-aware job stubs, or a complete resource (migration, domain, application, persistence, HTTP and tests) without overwriting files.",
+			SideEffects: []string{"filesystem_read", "filesystem_write"},
+			Examples: []string{
+				"forge generate migration create_widgets --dry-run", "forge generate view welcome", "forge generate job cleanup --dry-run",
+				"forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run",
+				"forge generate resource category name:string --global --plural categories",
+			},
+			Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories. `generate resource` reads FORGE_DATABASE_URL (process environment over env files, as forge inspect does) only to choose the database dialect; the value is never printed. Field types: string (up to 255 characters), text, int (64-bit), bool, time (UTC), uuid (UUIDv7); a trailing ? makes a field optional (quote it in shells that expand ?). Exactly one of --tenant-scoped or --global is required. Resources are never public: the printed wiring requires an application-supplied guard, and nothing edits app/bootstrap/bootstrap.go."},
+			Flags: []flagDetail{
+				{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."},
+				{Name: "--tenant-scoped", Description: "resource only: rows belong to one tenant (tenant_id bound in every statement; PostgreSQL also enables row-level security)."},
+				{Name: "--global", Description: "resource only: rows are shared by all tenants."},
+				{Name: "--plural", Value: "PLURAL", Description: "resource only: snake_case plural used for the table and route (default: built-in English rules)."},
+			},
+		},
 		{Name: "doctor", Usage: "forge doctor [--json]", Summary: "Validate local Forge configuration and show redacted diagnostics.", SideEffects: []string{"environment_read", "filesystem_read"}, Examples: []string{"forge doctor", "forge doctor --json"}, Environment: configEnvironment("Checks configuration values and intentionally omits their contents from JSON output."), Flags: []flagDetail{{Name: "--json", Description: "Print schema-versioned diagnostics with stable remediation codes."}}},
 		{Name: "inspect", Usage: "forge inspect --json", Summary: "Read-only inventory of commands, migrations, static routes, modules and database adapter; never executes application code.", SideEffects: []string{"filesystem_read", "environment_read"}, Examples: []string{"forge inspect --json"}, Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Process environment takes precedence over env files; the database URL value is never emitted."}, Flags: []flagDetail{{Name: "--json", Description: "Print the schema-versioned project inventory."}}},
 		{

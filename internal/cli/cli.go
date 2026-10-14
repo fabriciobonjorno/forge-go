@@ -280,6 +280,9 @@ commands:
                       create or preview an embedded, auto-escaped HTML template
   generate job NAME [--dry-run]
                       create or preview a cancellation-aware job stub and tests
+  generate resource NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
+                      create or preview a migration, domain, application,
+                      persistence and HTTP layers with tests; never public
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   help --json         print the versioned machine-readable command catalog
