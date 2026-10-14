@@ -317,28 +317,49 @@ func encodeSubject(subject string) string {
 
 // foldHeader renders "Name: value" with lines folded at spaces so none
 // exceeds 78 columns where a space allows. Folding inserts CRLF before an
-// existing space, which unfolding removes again; values never contain CR or
-// LF (validated), so no extra line can appear.
+// existing run of spaces, which unfolding removes again, so the value is
+// preserved exactly; values never contain CR or LF (validated), so no extra
+// line can appear.
+//
+// Two invariants protect against gateways that strip trailing whitespace:
+// no line ends in whitespace (a run of spaces always moves to the start of
+// the next line, in front of a word), and no line is whitespace-only (a
+// stripped blank line would end the header block early). Leading and
+// trailing spaces of the value are not significant and are dropped.
 func foldHeader(name, value string) string {
 	const limit = 76
-	line := name + ": "
+	value = strings.Trim(value, " ")
+	line := name + ":"
+	if value == "" {
+		return line
+	}
 	var out strings.Builder
-	for i, word := range strings.Split(value, " ") {
+	first := true
+	for rest := value; rest != ""; {
+		gap := rest[:len(rest)-len(strings.TrimLeft(rest, " "))]
+		rest = rest[len(gap):]
+		word := rest
+		if i := strings.IndexByte(rest, ' '); i >= 0 {
+			word = rest[:i]
+		}
+		rest = rest[len(word):]
+		if first {
+			gap = " "
+		}
 		switch {
-		case i == 0 && len(line)+len(word) > limit && len(word) > limit/2:
+		case first && len(line)+len(gap)+len(word) > limit && len(word) > limit/2:
 			// A long first token (an RFC 2047 word) goes on its own line.
-			out.WriteString(strings.TrimRight(line, " "))
-			out.WriteString("\r\n")
-			line = " " + word
-		case i == 0:
-			line += word
-		case len(line)+1+len(word) > limit:
 			out.WriteString(line)
 			out.WriteString("\r\n")
-			line = " " + word
+			line = gap + word
+		case !first && len(line)+len(gap)+len(word) > limit:
+			out.WriteString(line)
+			out.WriteString("\r\n")
+			line = gap + word
 		default:
-			line += " " + word
+			line += gap + word
 		}
+		first = false
 	}
 	out.WriteString(line)
 	return out.String()
