@@ -68,6 +68,11 @@ type executor interface {
 // In returns an Inserter that writes through tx, so the job commits or rolls
 // back with the caller's transaction and is invisible to workers until then.
 // No second transaction is opened and nothing is committed by the store.
+//
+// Under REPEATABLE READ or SERIALIZABLE, two transactions that enqueue the
+// same key concurrently make one fail with SQLSTATE 40001, like any
+// conflicting write; run them with postgres.TxOptions.Attempts so the retry
+// sees the committed job and reports a duplicate. READ COMMITTED needs no retry.
 func (s *Store) In(tx pgx.Tx) queue.Inserter { return inserter{exec: tx} }
 
 type inserter struct{ exec executor }
@@ -175,15 +180,22 @@ func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Cl
 // worker's job waits at most this long beyond its lease.
 const recoveryInterval = 250 * time.Millisecond
 
-// recoverExpired makes jobs whose lease expired pending again, or dead when
-// they used their last attempt.
+// recoverExpired is Recover, at most once per recoveryInterval, for Claim.
 func (s *Store) recoverExpired(ctx context.Context) error {
 	now := time.Now().UnixNano()
 	last := s.lastReap.Load()
 	if now-last < int64(recoveryInterval) || !s.lastReap.CompareAndSwap(last, now) {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.Recover(ctx)
+	return err
+}
+
+// Recover makes jobs whose lease expired pending again, or dead when they
+// used their last attempt. It handles up to 100 jobs per call.
+func (s *Store) Recover(ctx context.Context) (int64, error) {
+	s.lastReap.Store(time.Now().UnixNano())
+	tag, err := s.pool.Exec(ctx, `
 		WITH expired AS (
 			SELECT id FROM forge_jobs
 			WHERE state = 'running' AND lease_until <= clock_timestamp()
@@ -200,9 +212,9 @@ func (s *Store) recoverExpired(ctx context.Context) error {
 		WHERE j.id = expired.id
 	`)
 	if err != nil {
-		return fmt.Errorf("recover expired job leases: %w", err)
+		return 0, fmt.Errorf("recover expired job leases: %w", err)
 	}
-	return nil
+	return tag.RowsAffected(), nil
 }
 
 // Renew extends the lease of a running job.

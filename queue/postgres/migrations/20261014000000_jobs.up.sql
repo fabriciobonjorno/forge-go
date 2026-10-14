@@ -2,7 +2,9 @@ CREATE TABLE forge_jobs (
     id uuid PRIMARY KEY,
     queue varchar(64) NOT NULL CHECK (queue ~ '^[a-z][a-z0-9_.-]{0,63}$'),
     kind varchar(64) NOT NULL CHECK (kind ~ '^[a-z][a-z0-9_.-]{0,63}$'),
-    payload jsonb NOT NULL CHECK (octet_length(payload::text) <= 1048576),
+    -- The application bounds the payload to 1 MiB of compact JSON; jsonb's text
+    -- form adds spaces, so the database bound is looser (twice the limit).
+    payload jsonb NOT NULL CHECK (octet_length(payload::text) <= 2097152),
     state varchar(16) NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'succeeded', 'dead')),
     priority integer NOT NULL DEFAULT 0,
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),

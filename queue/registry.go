@@ -242,6 +242,10 @@ func RunAt(t time.Time) EnqueueOption {
 			s.err = errors.New("queue: run time is required")
 			return
 		}
+		if err := validateRunAt(t); err != nil {
+			s.err = err
+			return
+		}
 		s.runAt = t.UTC()
 	}
 }

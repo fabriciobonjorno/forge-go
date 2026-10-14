@@ -156,7 +156,26 @@ func (j NewJob) Validate() error {
 	if j.Priority < -MaxPriority || j.Priority > MaxPriority {
 		return fmt.Errorf("queue: priority must be between %d and %d", -MaxPriority, MaxPriority)
 	}
+	if !j.RunAt.IsZero() {
+		if err := validateRunAt(j.RunAt); err != nil {
+			return err
+		}
+	}
 	return validateKey(j.Key)
+}
+
+// Years every adapter stores and orders correctly: SQLite compares fixed-width
+// text (a five-digit year sorts before 2026) and MySQL DATETIME ends at 9999.
+const (
+	minRunAtYear = 1000
+	maxRunAtYear = 9999
+)
+
+func validateRunAt(t time.Time) error {
+	if year := t.UTC().Year(); year < minRunAtYear || year > maxRunAtYear {
+		return fmt.Errorf("queue: run time must fall in the years %d to %d", minRunAtYear, maxRunAtYear)
+	}
+	return nil
 }
 
 func validateKey(key string) error {
@@ -164,8 +183,8 @@ func validateKey(key string) error {
 		return fmt.Errorf("queue: idempotency key must not exceed %d bytes", MaxKeyLength)
 	}
 	for _, r := range key {
-		if r < 0x20 || r == 0x7f || r == 0xfffd {
-			return errors.New("queue: idempotency key must be printable UTF-8")
+		if unsafeRune(r) {
+			return errors.New("queue: idempotency key must be printable UTF-8 without control or bidirectional formatting characters")
 		}
 	}
 	return nil
@@ -306,6 +325,11 @@ type Store interface {
 	Complete(ctx context.Context, lease Lease) error
 	// Fail schedules a retry or kills the job, or returns ErrLeaseLost.
 	Fail(ctx context.Context, lease Lease, failure Failure) error
+	// Recover makes every job whose lease expired pending again, or dead when
+	// it already used its last attempt, and reports how many it changed. Claim
+	// recovers too, but only while a worker has a free slot, so workers also
+	// call Recover on their own schedule.
+	Recover(ctx context.Context) (int64, error)
 	// Release gives the job back without penalty (the attempt is not
 	// counted), or returns ErrLeaseLost. Graceful shutdown uses it.
 	Release(ctx context.Context, lease Lease) error

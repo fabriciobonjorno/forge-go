@@ -202,16 +202,23 @@ func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Cl
 	return queue.Claimed{Job: job, Payload: []byte(payload), Lease: queue.Lease{JobID: job.ID, Token: token}}, true, nil
 }
 
-// recoverExpired makes jobs whose lease expired pending again, or dead when
-// they used their last attempt.
+// recoverExpired is Recover, at most once per recoveryInterval, for Claim.
 func (s *Store) recoverExpired(ctx context.Context) error {
 	now := time.Now().UnixNano()
 	last := s.lastReap.Load()
 	if now-last < int64(recoveryInterval) || !s.lastReap.CompareAndSwap(last, now) {
 		return nil
 	}
+	_, err := s.Recover(ctx)
+	return err
+}
+
+// Recover makes jobs whose lease expired pending again, or dead when they
+// used their last attempt. It handles up to 100 jobs per call.
+func (s *Store) Recover(ctx context.Context) (int64, error) {
+	s.lastReap.Store(time.Now().UnixNano())
 	stamp := format(s.now())
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		UPDATE forge_jobs
 		SET state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
 		    finished_at = CASE WHEN attempts >= max_attempts THEN ? END,
@@ -225,9 +232,9 @@ func (s *Store) recoverExpired(ctx context.Context) error {
 		)
 	`, stamp, stamp)
 	if err != nil {
-		return fmt.Errorf("recover expired job leases: %w", err)
+		return 0, fmt.Errorf("recover expired job leases: %w", err)
 	}
-	return nil
+	return result.RowsAffected()
 }
 
 // fenced runs an UPDATE guarded by id and lease token; no row means the lease

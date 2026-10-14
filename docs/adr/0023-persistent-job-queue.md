@@ -50,6 +50,21 @@ idempotency keys are handled without raising a database error (`ON CONFLICT DO
 NOTHING` / `ON DUPLICATE KEY UPDATE id = id`), so a duplicate never aborts the
 caller's PostgreSQL transaction.
 
+MySQL and MariaDB look for the holder of a key with a plain, non-locking read
+before inserting, so a duplicate enqueue inside a long business transaction
+takes no lock on the running job (a locking read or `ON DUPLICATE KEY UPDATE`
+would block the worker's heartbeat and acknowledgement until the business
+transaction ended). Only when two enqueues of one key race does the losing
+INSERT leave a shared lock on the duplicate unique-index entry until its
+transaction ends; it can delay the holder's Complete or Fail, never its
+heartbeat.
+
+PostgreSQL under REPEATABLE READ or SERIALIZABLE reports a concurrent enqueue
+of the same key as a serialization failure (SQLSTATE 40001), as it does for any
+conflicting write; run such transactions with `postgres.TxOptions.Attempts` so
+the retry sees the committed holder and reports a duplicate. At READ COMMITTED
+one caller inserts and the others get duplicates, with no retry.
+
 ### Claiming, leases and fencing
 
 - Claim = one job, one short statement or transaction, ended before the
@@ -64,16 +79,22 @@ caller's PostgreSQL transaction.
 - Each claim gets a UUIDv7 lease token. Renew, Complete, Fail and Release all
   require `id AND lease_token AND state = 'running'`; zero affected rows is
   `ErrLeaseLost`. A stale worker cannot overwrite a newer claim.
-- Expired leases are recovered by the claim path itself (throttled to one
-  sweep per 250 ms per store, no dependency on a maintenance goroutine): a
-  job whose lease expired becomes pending again, or dead when it already used
-  its last attempt. A crashed worker's jobs therefore resume at most
-  lease + 250 ms after its last renewal.
-- A running handler's lease is renewed every `Lease/3`. If the store says the
-  lease is gone the handler's context is canceled with `ErrLeaseLost` and its
-  result is discarded. If renewals merely fail (database unreachable), the
-  handler is canceled once a full lease has passed without success, and its
-  outcome is still written fenced.
+- Expired leases are recovered by `Store.Recover` (a job whose lease expired
+  becomes pending again, or dead when it already used its last attempt). Two
+  things call it: `Claim` (throttled to one sweep per 250 ms per store) and
+  each worker's own recovery loop, which runs every `Lease/4` (between 100 ms
+  and 5 s) whether or not the worker has a free slot, so a saturated worker
+  still recovers a dead peer's jobs. A crashed worker's jobs become pending
+  at most `Lease` plus that interval (at most 5 s) after its last renewal,
+  provided at least one worker is alive; with no live worker nothing recovers
+  them until one starts.
+- A running handler's lease is renewed every `Lease/3`. The worker keeps a
+  deadline of `Lease - Lease/10` after the start of the last successful claim
+  or renewal; every renewal is capped to the time left and, when the deadline
+  passes without a successful renewal, the handler's context is canceled with
+  `ErrLeaseLost` while the store's lease has not yet expired. If the store
+  says the lease is gone the context is canceled and the result discarded. In
+  every case the outcome is still written fenced.
 - Workers claim only kinds in their registry, so a job enqueued by a newer
   deploy waits for a worker that knows it instead of failing on an old one.
 
@@ -99,7 +120,14 @@ Payloads are never logged, never passed to hooks and never written to an
 error column. The stored `last_error` is `"<root error type>: <message>"`
 where the message has payload string values, URL credentials, `key=value`
 secret assignments and bearer tokens replaced by `[redacted]`, control
-characters removed, and the result cut to 1024 bytes on a rune boundary.
+characters (C0 and C1, including the 8-bit CSI), bidirectional overrides and
+isolates, and line separators removed, and the result cut to 1024 bytes on a
+rune boundary. Payload strings of any length are redacted whole, and any run
+of 32 bytes or more copied from a payload string over 48 bytes is redacted too;
+when a payload holds more than 8192 distinct strings the shortest are not
+matched. An error whose `Error` method panics is stored as
+`<type>: error text unavailable`. The `jobs` command escapes the same
+characters when printing, so stored text cannot drive the operator's terminal.
 This is defense in depth, not a proof: handlers should not echo their input
 in errors. Payloads must not contain secrets; they are stored in clear text.
 
@@ -115,13 +143,24 @@ The key is free again once the job succeeds or dies.
 
 `Worker.Start(ctx)` launches one poller per queue, each bounded by its queue's
 concurrency (a slot semaphore, so there is one claim query per free slot and
-one idle poll per interval, with jittered exponential idle backoff from 1 s up
-to 10 s). Canceling the start context (SIGTERM) stops claiming without
-interrupting running jobs. `Worker.Shutdown(ctx)`, whose signature matches
-`forge.ShutdownHook`, waits for in-flight jobs; at the deadline it cancels
-the handlers, waits `ReleaseTimeout` (5 s), and releases whatever it still
-holds back to the queue **without counting the attempt**, so another worker
-picks them up immediately. Register it with `App.OnShutdown` after the
+one idle poll per interval, with jittered exponential idle backoff drawn
+from [interval/2, interval] and doubling from 1 s up to 10 s). Canceling the
+start context (SIGTERM) stops claiming without interrupting running jobs;
+no claim starts once shutdown began. `Worker.Shutdown(ctx)`, whose signature
+matches `forge.ShutdownHook`, waits for in-flight jobs. At the deadline it
+cancels the handlers and waits up to `ReleaseTimeout` (5 s) for them to return;
+each handler that returns after cancellation gives its job back to the queue
+**without counting the attempt** (or acknowledges it, if the work finished). It
+then waits up to another `ReleaseTimeout` for acknowledgements already being
+written, so the caller can close the pool.
+
+The guarantee has a limit: a handler that ignores its canceled context and is
+still running after that is **abandoned, not released**. Releasing it would let
+another worker run the job concurrently with the original handler. Its lease
+is no longer renewed, so the job becomes available after the lease expires
+(at most `Lease` later), Shutdown returns an error naming how many handlers
+are still running, and those handlers may still touch the database; handlers
+must honor their context. Register Shutdown with `App.OnShutdown` after the
 database hook (hooks run in reverse), within the HTTP shutdown budget.
 
 ### Operations
@@ -134,7 +173,8 @@ logs, metrics or tracing; the core imports no telemetry library.
 ### Storage
 
 UUIDv7 ids: `uuid` (PostgreSQL), `CHAR(36)` ascii (MySQL), `TEXT` (SQLite
-STRICT). Payloads: `jsonb` on PostgreSQL; `MEDIUMTEXT` with `JSON_VALID`
+STRICT). Payloads: `jsonb` on PostgreSQL (its size CHECK is twice the application limit, because
+jsonb's text form adds spaces); `MEDIUMTEXT` with `JSON_VALID`
 on MySQL/MariaDB (the JSON type normalizes numbers and key order, and is a
 `LONGTEXT` alias on MariaDB); `TEXT` with `json_valid` on SQLite. Claiming
 indexes cover `(queue, priority, run_at, id)` for pending jobs. Migrations
@@ -149,8 +189,9 @@ like the outbox's.
 - No exactly-once promise, no cross-queue fairness, no per-job rate limits
   and no cron (the in-process `jobs` scheduler remains; it can enqueue into
   this queue with a key per tick for cluster-wide once-per-tick).
-- Polling, not LISTEN/NOTIFY: a job waits up to the idle poll interval (at
-  most 10 s, 1 s when the queue is busy). Push wake-ups are future work.
+- Polling, not LISTEN/NOTIFY: a job waits up to `MaxPollInterval` (10 s by
+  default) on an idle queue, 1 s while the queue is busy. Push wake-ups are
+  future work.
 - SQLite is for single-host deployments; MySQL/MariaDB and PostgreSQL scale
   to many worker hosts. Workers are trusted and global: the queue is not
   tenant-scoped; payloads that concern a tenant carry the tenant ID and the

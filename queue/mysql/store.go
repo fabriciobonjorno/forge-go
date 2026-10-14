@@ -66,14 +66,17 @@ func NewStore(db *sqldb.DB) (*Store, error) {
 // back with the caller's transaction and is invisible to workers until then.
 // tx is normally the *sql.Tx of sqldb.DB.InTx; nothing is committed by the
 // store.
-func (s *Store) In(tx sqldb.DBTX) queue.Inserter { return inserter{exec: tx} }
+func (s *Store) In(tx sqldb.DBTX) queue.Inserter { return inserter{exec: tx, reader: s.db} }
 
-type inserter struct{ exec sqldb.DBTX }
+// inserter writes through exec (the caller's transaction) and reads the
+// committed state of the queue through reader (the pool), outside that
+// transaction.
+type inserter struct{ exec, reader sqldb.DBTX }
 
 // Insert stores job in its own implicit transaction (a single statement).
 // Use In for atomicity with business data.
 func (s *Store) Insert(ctx context.Context, job queue.NewJob) (queue.InsertResult, error) {
-	return inserter{exec: s.db}.Insert(ctx, job)
+	return inserter{exec: s.db, reader: s.db}.Insert(ctx, job)
 }
 
 func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertResult, error) {
@@ -94,35 +97,51 @@ func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertRe
 		key = job.Key
 	}
 	args = append(args, key)
-	query := `INSERT INTO forge_jobs (id, queue, kind, payload, priority, max_attempts, run_at, enqueued_at, idempotency_key)
+	insertSQL := `INSERT INTO forge_jobs (id, queue, kind, payload, priority, max_attempts, run_at, enqueued_at, idempotency_key)
 		VALUES (?, ?, ?, ?, ?, ?, ` + runAt + `, UTC_TIMESTAMP(6), ?)`
-	if job.Key != "" {
-		// A collision on the unique index of active keys is a no-op rather
-		// than an error, so it cannot disturb the caller's transaction.
-		query += " ON DUPLICATE KEY UPDATE id = id"
-	}
-	for range 3 {
-		result, err := in.exec.ExecContext(ctx, query, args...)
-		if err != nil {
+	if job.Key == "" {
+		if _, err := in.exec.ExecContext(ctx, insertSQL, args...); err != nil {
 			return queue.InsertResult{}, forgemysql.Translate(fmt.Errorf("insert job: %w", err))
 		}
-		if job.Key == "" {
-			return queue.InsertResult{ID: job.ID}, nil
-		}
-		if n, err := result.RowsAffected(); err == nil && n > 0 {
-			return queue.InsertResult{ID: job.ID}, nil
-		}
-		// Read the holder with a locking read, which sees the latest
-		// committed row even inside a REPEATABLE READ snapshot.
+		return queue.InsertResult{ID: job.ID}, nil
+	}
+
+	// A keyed enqueue first looks for the holder WITHOUT locking it. Locking
+	// reads and ON DUPLICATE KEY UPDATE would take row locks on the active
+	// job that last until the caller's transaction ends, blocking the
+	// worker's heartbeat and acknowledgement of a job that is running.
+	for range 3 {
 		var id uuid.UUID
-		err = in.exec.QueryRowContext(ctx, "SELECT id FROM forge_jobs WHERE kind = ? AND active_key = ? LOCK IN SHARE MODE", job.Kind, job.Key).Scan(&id)
+		err := in.exec.QueryRowContext(ctx, "SELECT id FROM forge_jobs WHERE kind = ? AND active_key = ?", job.Kind, job.Key).Scan(&id)
 		if err == nil {
 			return queue.InsertResult{ID: id, Duplicate: true}, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return queue.InsertResult{}, forgemysql.Translate(fmt.Errorf("find job holding idempotency key: %w", err))
 		}
-		// The holder finished between the two statements; insert again.
+		_, err = in.exec.ExecContext(ctx, insertSQL, args...)
+		if err == nil {
+			return queue.InsertResult{ID: job.ID}, nil
+		}
+		if forgemysql.ErrorNumber(err) != duplicateEntry {
+			return queue.InsertResult{}, forgemysql.Translate(fmt.Errorf("insert job: %w", err))
+		}
+		// Lost a race: a concurrent enqueue committed first, or the snapshot
+		// of a REPEATABLE READ transaction hid a committed holder. Read the
+		// committed holder through the pool, outside the caller's
+		// transaction, so no locking read is needed. The failed INSERT still
+		// leaves a shared lock on the duplicate unique-index entry until the
+		// caller's transaction ends; it can delay the holder's Complete or Fail
+		// (they clear the entry) but never a heartbeat. It exists only when two
+		// enqueues of one key race, never for an ordinary duplicate.
+		err = in.reader.QueryRowContext(ctx, "SELECT id FROM forge_jobs WHERE kind = ? AND active_key = ?", job.Kind, job.Key).Scan(&id)
+		if err == nil {
+			return queue.InsertResult{ID: id, Duplicate: true}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return queue.InsertResult{}, forgemysql.Translate(fmt.Errorf("find job holding idempotency key: %w", err))
+		}
+		// The holder finished meanwhile; try again.
 	}
 	return queue.InsertResult{}, errors.New("queue: idempotency key conflict could not be resolved")
 }
@@ -191,29 +210,48 @@ func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Cl
 	return claimed, found, nil
 }
 
-// recoverExpired makes jobs whose lease expired pending again, or dead when
-// they used their last attempt. Concurrent sweeps order rows the same way, so
-// they wait for each other instead of deadlocking; a lost race is harmless
-// and ignored.
+// recoverExpired is Recover, at most once per recoveryInterval, for Claim. A
+// lost lock race is harmless and ignored; the next sweep retries.
 func (s *Store) recoverExpired(ctx context.Context) error {
 	now := time.Now().UnixNano()
 	last := s.lastReap.Load()
 	if now-last < int64(recoveryInterval) || !s.lastReap.CompareAndSwap(last, now) {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE forge_jobs
-		SET state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
-		    finished_at = CASE WHEN attempts >= max_attempts THEN UTC_TIMESTAMP(6) END,
-		    lease_token = NULL, lease_until = NULL, locked_by = NULL,
-		    last_error = 'lease expired: the worker stopped renewing it'
-		WHERE state = 'running' AND lease_until <= UTC_TIMESTAMP(6)
-		ORDER BY lease_until
-		LIMIT 100`)
-	if err != nil && !isConflict(err) {
-		return fmt.Errorf("recover expired job leases: %w", err)
+	if _, err := s.Recover(ctx); err != nil && !isConflict(err) {
+		return err
 	}
 	return nil
+}
+
+// Recover makes jobs whose lease expired pending again, or dead when they
+// used their last attempt. It handles up to 100 jobs per call. It runs at
+// READ COMMITTED, like Claim: at REPEATABLE READ the scan of the
+// (state, lease_until) index would take next-key locks on neighbouring rows
+// and block the heartbeats and acknowledgements of live jobs.
+func (s *Store) Recover(ctx context.Context) (int64, error) {
+	s.lastReap.Store(time.Now().UnixNano())
+	var changed int64
+	err := s.db.InTxWith(ctx, sqldb.TxOptions{Isolation: sql.LevelReadCommitted, Attempts: claimAttempts}, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE forge_jobs
+			SET state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
+			    finished_at = CASE WHEN attempts >= max_attempts THEN UTC_TIMESTAMP(6) END,
+			    lease_token = NULL, lease_until = NULL, locked_by = NULL,
+			    last_error = 'lease expired: the worker stopped renewing it'
+			WHERE state = 'running' AND lease_until <= UTC_TIMESTAMP(6)
+			ORDER BY lease_until
+			LIMIT 100`)
+		if err != nil {
+			return err
+		}
+		changed, err = result.RowsAffected()
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("recover expired job leases: %w", err)
+	}
+	return changed, nil
 }
 
 func isConflict(err error) bool {

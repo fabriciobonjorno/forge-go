@@ -37,6 +37,7 @@ const (
 	claimTimeout   = 30 * time.Second
 	persistTimeout = 10 * time.Second
 	pruneBatch     = 1000
+	recoverBatch   = 100 // jobs one Store.Recover call handles
 	maxPruneRounds = 10
 	maxClaimErrGap = 30 * time.Second
 )
@@ -144,6 +145,11 @@ type Worker struct {
 	pollers  sync.WaitGroup
 	jobs     sync.WaitGroup
 	inflight map[uuid.UUID]*running
+	// handlers counts jobs whose handler is running; settling counts jobs
+	// whose outcome is being written. Atomics rather than WaitGroups because
+	// Shutdown polls them while jobs keep starting and finishing.
+	handlers atomic.Int64
+	settling atomic.Int64
 	done     chan struct{}
 	stopErr  error
 }
@@ -157,12 +163,10 @@ const (
 	stateStopped
 )
 
-// running tracks one claimed job so that exactly one party settles it: the
-// job's own goroutine or a forced Shutdown.
+// running tracks one claimed job while its goroutine owns it.
 type running struct {
-	job     Job
-	lease   Lease
-	settled atomic.Bool
+	job           Job
+	handlerExited atomic.Bool
 }
 
 // NewWorker validates opts and returns a stopped worker.
@@ -317,6 +321,8 @@ func (w *Worker) Start(ctx context.Context) error {
 		w.pollers.Add(1)
 		go w.poll(pollCtx, q)
 	}
+	w.pollers.Add(1)
+	go w.recoverLoop(pollCtx)
 	if w.opts.RetainSucceeded > 0 {
 		w.pollers.Add(1)
 		go w.maintain(pollCtx)
@@ -345,11 +351,18 @@ func (w *Worker) Run(ctx context.Context) error {
 	return w.Shutdown(drain)
 }
 
-// Shutdown stops claiming and waits for in-flight jobs until ctx ends. Jobs
-// still running then have their contexts canceled; the worker waits
-// ReleaseTimeout for them to return and then releases every job it still
-// holds back to the queue without counting the interrupted attempt, so
-// another worker takes over at once instead of after a lease expiry.
+// Shutdown stops claiming and waits for in-flight jobs until ctx ends. If
+// jobs are still running then, their contexts are canceled and Shutdown waits
+// ReleaseTimeout for the handlers to return (each then returns its job to the
+// queue without counting the attempt, or acknowledges it if it finished) and
+// another ReleaseTimeout for acknowledgements that were already being written.
+//
+// A handler that ignores its canceled context and is still running after that
+// is abandoned, not released: handing its job to another worker would run it
+// twice at once. Its lease is no longer renewed, so the job becomes available
+// at most one Lease later, and Shutdown names the count in its error. Such a
+// handler may keep using the database; do not close the pool on a nil error
+// only, and keep handlers responsive to their context.
 //
 // Its signature matches forge.ShutdownHook. Register it after the database's
 // hook: hooks run in reverse order, so the worker drains before the pool
@@ -387,7 +400,7 @@ func (w *Worker) Shutdown(ctx context.Context) error {
 	select {
 	case <-drained:
 	case <-ctx.Done():
-		err = w.interrupt(drained, ctx.Err())
+		err = w.interrupt(ctx.Err())
 	}
 	w.jobStop(errShutdown)
 	w.mu.Lock()
@@ -399,43 +412,48 @@ func (w *Worker) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// interrupt cancels handlers, waits briefly for them and releases the jobs
-// that are still held.
-func (w *Worker) interrupt(drained <-chan struct{}, cause error) error {
-	w.jobStop(errShutdown)
-	select {
-	case <-drained:
-	case <-time.After(w.opts.ReleaseTimeout):
-	}
+// interrupt cancels the handlers and waits, bounded, for them and for the
+// acknowledgements in flight.
+func (w *Worker) interrupt(cause error) error {
 	w.mu.Lock()
-	pending := make([]*running, 0, len(w.inflight))
+	interrupted := len(w.inflight)
+	w.mu.Unlock()
+	w.jobStop(errShutdown) // handlers see errShutdown; heartbeats stop renewing
+	waitZero(&w.handlers, w.opts.ReleaseTimeout)
+	// Handlers that returned are now writing their outcome (a release, or the
+	// result of work that finished); those writes must land before the caller
+	// closes the pool.
+	waitZero(&w.settling, w.opts.ReleaseTimeout)
+
+	w.mu.Lock()
+	var abandoned []*running
 	for _, in := range w.inflight {
-		pending = append(pending, in)
+		if !in.handlerExited.Load() {
+			abandoned = append(abandoned, in)
+		}
 	}
 	w.mu.Unlock()
-
-	var wg sync.WaitGroup
-	var released atomic.Int64
-	for _, in := range pending {
-		if !in.settled.CompareAndSwap(false, true) {
-			continue // its goroutine is already acknowledging it
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := w.persist(func(ctx context.Context) error { return w.store.Release(ctx, in.lease) })
-			switch {
-			case err == nil:
-				released.Add(1)
-				w.finished(Result{Job: in.job, Outcome: OutcomeReleased})
-			case errors.Is(err, ErrLeaseLost):
-			default:
-				w.logger.Error("release job lease at shutdown", "job_id", in.job.ID, "kind", in.job.Kind, "error", err)
-			}
-		}()
+	for _, in := range abandoned {
+		w.logger.Error("handler ignored shutdown and is still running; its lease is no longer renewed and expires on its own",
+			"job_id", in.job.ID, "kind", in.job.Kind, "queue", in.job.Queue, "attempt", in.job.Attempt)
 	}
-	wg.Wait()
-	return fmt.Errorf("queue: worker shutdown interrupted %d job(s): %w", len(pending), cause)
+	if len(abandoned) > 0 {
+		return fmt.Errorf("queue: worker shutdown interrupted %d job(s); %d handler(s) still running were not released and their leases expire within %s: %w",
+			interrupted, len(abandoned), w.opts.Lease, cause)
+	}
+	return fmt.Errorf("queue: worker shutdown interrupted %d job(s): %w", interrupted, cause)
+}
+
+// waitZero polls until counter reaches zero or the timeout passes.
+func waitZero(counter *atomic.Int64, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for counter.Load() > 0 {
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return true
 }
 
 // poll claims jobs of one queue while there is a free slot.
@@ -450,6 +468,12 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 		case <-ctx.Done():
 			return
 		}
+		// select picks randomly among ready cases: with a free slot and a
+		// stopped context it can pick the slot. Never claim once stopped.
+		if ctx.Err() != nil {
+			return
+		}
+		claimStarted := time.Now()
 		claimed, ok, err := w.claim(q.Name)
 		switch {
 		case err != nil:
@@ -464,7 +488,8 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 		case !ok:
 			<-slots
 			failures = 0
-			if !sleep(ctx, idle/2+jitter(idle)) {
+			// Uniform in [idle/2, idle]: never longer than MaxPollInterval.
+			if !sleep(ctx, idle/2+jitter(idle/2)) {
 				return
 			}
 			idle = min(idle*2, w.opts.MaxPollInterval)
@@ -472,10 +497,11 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 		}
 		failures, idle = 0, w.opts.PollInterval
 		w.jobs.Add(1)
+		w.handlers.Add(1)
 		go func() {
 			defer func() { <-slots }()
 			defer w.jobs.Done()
-			w.process(claimed)
+			w.process(claimed, claimStarted)
 		}()
 	}
 }
@@ -499,12 +525,46 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// recoverEvery is how often a worker sweeps for expired leases on its own:
+// a quarter of the lease, between 100ms and 5s.
+func (w *Worker) recoverEvery() time.Duration {
+	return min(max(w.opts.Lease/4, 100*time.Millisecond), 5*time.Second)
+}
+
+// recoverLoop makes jobs of crashed workers available again. Claim sweeps
+// too, but only while a slot is free; a saturated worker would otherwise
+// never recover the jobs of a dead peer.
+func (w *Worker) recoverLoop(ctx context.Context) {
+	defer w.pollers.Done()
+	for {
+		interval := w.recoverEvery()
+		if !sleep(ctx, interval/2+jitter(interval/2)) {
+			return
+		}
+		for range maxPruneRounds {
+			sweepCtx, cancel := context.WithTimeout(w.jobCtx, claimTimeout)
+			n, err := w.store.Recover(sweepCtx)
+			cancel()
+			if err != nil {
+				w.logger.Warn("recover expired job leases failed", "error", err)
+				break
+			}
+			if n > 0 {
+				w.logger.Warn("recovered jobs whose lease expired", "jobs", n)
+			}
+			if n < recoverBatch {
+				break
+			}
+		}
+	}
+}
+
 // maintain deletes finished jobs past their retention.
 func (w *Worker) maintain(ctx context.Context) {
 	defer w.pollers.Done()
 	for {
 		interval := w.opts.MaintenanceInterval
-		if !sleep(ctx, interval/2+jitter(interval)) {
+		if !sleep(ctx, interval/2+jitter(interval/2)) {
 			return
 		}
 		for range maxPruneRounds {
@@ -523,9 +583,9 @@ func (w *Worker) maintain(ctx context.Context) {
 }
 
 // process runs one claimed job and settles it exactly once.
-func (w *Worker) process(claimed Claimed) {
+func (w *Worker) process(claimed Claimed, claimStarted time.Time) {
 	job := claimed.Job
-	in := &running{job: job, lease: claimed.Lease}
+	in := &running{job: job}
 	w.mu.Lock()
 	w.inflight[job.ID] = in
 	w.mu.Unlock()
@@ -546,9 +606,15 @@ func (w *Worker) process(claimed Claimed) {
 				w.opts.Hooks.Started(job)
 			}
 		})
-		outcome = w.invoke(reg, claimed)
+		outcome = w.invoke(reg, claimed, claimStarted)
 	}
 	duration := time.Since(started)
+	// From here the job is only being acknowledged. The counters change in
+	// this order so Shutdown never sees a job in neither phase.
+	w.settling.Add(1)
+	defer w.settling.Add(-1)
+	in.handlerExited.Store(true)
+	w.handlers.Add(-1)
 
 	switch {
 	case outcome.leaseLost:
@@ -568,13 +634,13 @@ func (w *Worker) process(claimed Claimed) {
 	}
 }
 
-// classify decides between retry and death and builds the stored message.
+// classify decides between retry and death and builds the stored message. It
+// never panics: a handler's error values are untrusted code.
 func (w *Worker) classify(reg *registration, job Job, payload []byte, err error) (Failure, string) {
 	message := sanitizeError(err, payload)
-	var permanent *permanentError
-	var after *retryAfterError
+	permanent, after := inspect(err)
 	failure := Failure{Message: message}
-	if errors.As(err, &permanent) || job.Attempt >= job.MaxAttempts {
+	if permanent || job.Attempt >= job.MaxAttempts {
 		failure.Dead = true
 		return failure, message
 	}
@@ -583,18 +649,31 @@ func (w *Worker) classify(reg *registration, job Job, payload []byte, err error)
 		backoff = reg.settings.backoff
 	}
 	failure.RetryIn = backoff.Delay(job.Attempt)
-	if errors.As(err, &after) {
+	if after != nil {
 		failure.RetryIn = after.delay
 	}
 	return failure, message
 }
 
-// settle persists the outcome unless a forced shutdown already released the
-// job, logs it and notifies the hook.
-func (w *Worker) settle(in *running, duration time.Duration, outcome Outcome, message string, retryIn time.Duration, write func(context.Context) error) {
-	if !in.settled.CompareAndSwap(false, true) {
-		return
+// inspect looks for Permanent and RetryAfter in err's chain. An error type
+// whose Unwrap or Is methods panic is treated as a plain failure.
+func inspect(err error) (permanent bool, after *retryAfterError) {
+	defer func() {
+		if recover() != nil {
+			permanent, after = false, nil
+		}
+	}()
+	var p *permanentError
+	var a *retryAfterError
+	permanent = errors.As(err, &p)
+	if errors.As(err, &a) {
+		after = a
 	}
+	return permanent, after
+}
+
+// settle persists the outcome, logs it and notifies the hook.
+func (w *Worker) settle(in *running, duration time.Duration, outcome Outcome, message string, retryIn time.Duration, write func(context.Context) error) {
 	job := in.job
 	err := w.persist(write)
 	switch {
@@ -671,7 +750,7 @@ func (e *panicError) Error() string { return "handler panicked with " + e.typeNa
 
 // invoke runs the handler with a context that carries the job, ends on
 // timeout, shutdown or a lost lease, and keeps the lease renewed.
-func (w *Worker) invoke(reg *registration, claimed Claimed) attempt {
+func (w *Worker) invoke(reg *registration, claimed Claimed, claimStarted time.Time) attempt {
 	job := claimed.Job
 	ctx, cancel := context.WithCancelCause(w.jobCtx)
 	defer cancel(nil)
@@ -687,7 +766,7 @@ func (w *Worker) invoke(reg *registration, claimed Claimed) attempt {
 	beatDone := make(chan struct{})
 	go func() {
 		defer close(beatDone)
-		w.heartbeat(claimed.Lease, stopBeat, &lost, cancel)
+		w.heartbeat(claimed.Lease, claimStarted, stopBeat, &lost, cancel)
 	}()
 
 	err := w.call(reg, ctx, claimed)
@@ -719,38 +798,63 @@ func (w *Worker) call(reg *registration, ctx context.Context, claimed Claimed) (
 	return reg.run(ctx, claimed.Payload)
 }
 
-// heartbeat renews the lease every Lease/3. When the store says the lease is
-// gone it marks it lost and cancels the handler. When renewals only fail
-// (the database is unreachable) it keeps trying until a full lease has passed
-// since the last success, then cancels the handler too: past that point
-// another worker may legitimately own the job.
-func (w *Worker) heartbeat(lease Lease, stop <-chan struct{}, lost *atomic.Bool, cancel context.CancelCauseFunc) {
+// heartbeat renews the lease every Lease/3 and enforces its deadline.
+//
+// The lease granted by a successful claim or renewal lasts Lease from a moment
+// no earlier than the instant the request was sent, so the worker treats
+// start+Lease-margin as the deadline (margin = Lease/10, leaving the handler
+// time to react). Renewals are capped to the time left, and when the deadline
+// passes without a successful renewal the handler's context is canceled: past
+// that point another worker may legitimately own the job. A renewal that the
+// store rejects means the lease is certainly gone.
+//
+// After a forced shutdown the heartbeat stops renewing, so the lease of an
+// abandoned handler expires and the job becomes available to others.
+func (w *Worker) heartbeat(lease Lease, claimStarted time.Time, stop <-chan struct{}, lost *atomic.Bool, cancel context.CancelCauseFunc) {
+	margin := max(w.opts.Lease/10, time.Millisecond)
 	interval := max(w.opts.Lease/3, time.Millisecond)
+	deadline := claimStarted.Add(w.opts.Lease - margin)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	lastRenewed := time.Now()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
 	for {
 		select {
 		case <-stop:
 			return
+		case <-w.jobCtx.Done():
+			return
+		case <-timer.C:
+			w.logger.Warn("job lease could not be renewed before its deadline; canceling the handler", "job_id", lease.JobID)
+			cancel(ErrLeaseLost)
+			return
 		case <-ticker.C:
 		}
-		ctx, done := context.WithTimeout(context.Background(), min(interval*2, persistTimeout))
+		started := time.Now()
+		remaining := deadline.Sub(started)
+		if remaining <= 0 {
+			cancel(ErrLeaseLost)
+			return
+		}
+		ctx, done := context.WithTimeout(context.Background(), min(remaining, persistTimeout))
 		err := w.store.Renew(ctx, lease, w.opts.Lease)
 		done()
 		switch {
 		case err == nil:
-			lastRenewed = time.Now()
+			deadline = started.Add(w.opts.Lease - margin)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(time.Until(deadline))
 		case errors.Is(err, ErrLeaseLost):
 			lost.Store(true)
 			cancel(ErrLeaseLost)
 			return
 		default:
 			w.logger.Warn("renew job lease failed", "job_id", lease.JobID, "error", err)
-			if time.Since(lastRenewed) >= w.opts.Lease {
-				cancel(ErrLeaseLost)
-				return
-			}
 		}
 	}
 }

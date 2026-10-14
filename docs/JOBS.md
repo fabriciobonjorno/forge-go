@@ -88,8 +88,14 @@ job, and workers cannot see the job before it commits. On MySQL and SQLite,
 `tx` is the `*sql.Tx` of `db.InTx`. Without a transaction, pass the store:
 `queue.Enqueue(ctx, store, registry, ...)`.
 
+On PostgreSQL, transactions at REPEATABLE READ or SERIALIZABLE can fail with
+SQLSTATE 40001 when two of them enqueue the same key concurrently, as with any
+conflicting write; run them with `postgres.TxOptions{Attempts: n}` and the retry
+reports a duplicate. READ COMMITTED needs no retry. On MySQL and MariaDB a
+duplicate enqueue takes no lock on the running job.
+
 Options: `WithQueue`, `WithMaxAttempts`, `WithPriority`, `WithKey`, `RunAfter(d)`,
-`RunAt(t)`. `InsertResult.Duplicate` tells you a key was already held; its
+`RunAt(t)` (years 1000 to 9999). `InsertResult.Duplicate` tells you a key was already held; its
 `ID` is the existing job.
 
 ## 4. Run the worker and stop it with the app
@@ -116,17 +122,26 @@ func Configure(ctx context.Context, app *forge.App) error {
 }
 ```
 
-On SIGTERM the worker stops claiming at once, running jobs finish, and
-`Shutdown` (bounded by `FORGE_HTTP_SHUTDOWN_TIMEOUT`) cancels what is left and
-**releases** it back to the queue without counting an attempt, so another
-worker takes over immediately. Keep handlers responsive to `ctx`.
+On SIGTERM the worker stops claiming at once and running jobs finish.
+`Shutdown` (bounded by `FORGE_HTTP_SHUTDOWN_TIMEOUT`) cancels what is left;
+every handler that then returns gives its job back to the queue without
+counting an attempt, and `Shutdown` waits for those writes before returning.
+A handler that ignores its canceled context is **not released** (another worker
+would run the job concurrently with it): its lease stops being renewed, the job
+becomes available when the lease expires, and `Shutdown` returns an error
+saying how many handlers were still running. Keep handlers responsive to `ctx`.
 
 Worker options (all optional): `Lease` (60s; renewed every third of it, so a
 crashed worker's jobs resume after at most a lease), `PollInterval`/
 `MaxPollInterval` (1s/10s, jittered), `Backoff`, `RetainSucceeded` (24h),
-`WorkerID`, `Hooks`. Run several processes and workers freely; a job is never
-run by two workers at once, and a worker that lost its lease cannot overwrite
-the new owner's result (token fencing).
+`WorkerID`, `Hooks`. Run several processes and workers freely; a job is leased
+to one worker at a time, a worker that lost its lease cannot overwrite the new
+owner's result (token fencing), and a handler is canceled before its lease can
+expire when renewals fail. Delivery stays at-least-once: see above.
+
+Lease recovery runs in every worker, independently of free slots, every
+`Lease/4` (100ms to 5s): a crashed worker's jobs are pending again at most one
+lease plus that interval after its last renewal, as long as one worker is alive.
 
 Run job processing in dedicated replicas by starting the worker only in a
 second command or `Configure` branch selected by configuration; the queue

@@ -207,6 +207,9 @@ func Run(t *testing.T, newStore NewStore) {
 		{"StatsAndPrune", statsAndPrune},
 		{"PayloadsNeverReachLogsOrErrors", payloadPrivacy},
 		{"ReleaseDoesNotCountTheAttempt", releaseKeepsAttempts},
+		{"RecoverRequeuesExpiredLeases", recoverRequeues},
+		{"SaturatedWorkerStillRecoversExpiredLeases", saturatedWorkerRecovers},
+		{"ForcedShutdownNeverRunsAJobTwiceAtOnce", forcedShutdownNoOverlap},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newStore) })
@@ -1105,4 +1108,118 @@ func releaseKeepsAttempts(t *testing.T, newStore NewStore) {
 	if again.Job.Attempt != 1 {
 		t.Fatalf("attempt after release = %d, want 1", again.Job.Attempt)
 	}
+}
+
+func recoverRequeues(t *testing.T, newStore NewStore) {
+	store := newStore(t)
+	ctx := context.Background()
+	expiring := insertK(t, store, 3)
+	exhausted := insertK(t, store, 1)
+	live := insertK(t, store, 3)
+	first := claimOne(t, store, "a", 100*time.Millisecond)
+	second := claimOne(t, store, "a", 100*time.Millisecond)
+	third := claimOne(t, store, "b", time.Hour)
+	time.Sleep(400 * time.Millisecond)
+
+	n, err := store.Recover(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("Recover = %d, %v; want the two expired jobs", n, err)
+	}
+	states := map[uuid.UUID]queue.State{}
+	for _, id := range []uuid.UUID{expiring, exhausted, live} {
+		states[id] = e2eState(t, store, id)
+	}
+	for _, id := range []uuid.UUID{first.Job.ID, second.Job.ID} {
+		// Which of the two had one attempt left depends on insertion order.
+		if states[id] != queue.StatePending && states[id] != queue.StateDead {
+			t.Errorf("expired job %s is %s", id, states[id])
+		}
+	}
+	if states[third.Job.ID] != queue.StateRunning {
+		t.Errorf("live job is %s, want running", states[third.Job.ID])
+	}
+	if n, err := store.Recover(ctx); err != nil || n != 0 {
+		t.Fatalf("second Recover = %d, %v; want nothing left", n, err)
+	}
+}
+
+func e2eState(t *testing.T, store queue.Store, id uuid.UUID) queue.State {
+	t.Helper()
+	info, err := store.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.State
+}
+
+// A worker whose slots are all busy never claims, so only its own recovery
+// loop can requeue the jobs of a crashed peer.
+func saturatedWorkerRecovers(t *testing.T, newStore NewStore) {
+	e := newEnv(t, newStore)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	e.register("busy", func(ctx context.Context, _ Message) error {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil
+	})
+	e.register("orphan", func(context.Context, Message) error { return nil })
+	t.Cleanup(func() { close(release) })
+	e.enqueue("busy", Message{ID: 1}, queue.WithQueue("busyq"))
+	e.start(e.worker(queue.WorkerOptions{
+		Lease:  400 * time.Millisecond,
+		Queues: []queue.QueueConfig{{Name: "busyq", Concurrency: 1}},
+	}))
+	<-started
+
+	// A job claimed by a worker that then crashed (never renewed).
+	orphan := e.enqueue("orphan", Message{ID: 2}, queue.WithQueue("elsewhere"))
+	claimed, ok, err := e.store.Claim(context.Background(), queue.ClaimRequest{Queue: "elsewhere", Kinds: []string{"orphan"}, WorkerID: "crashed", Lease: 150 * time.Millisecond})
+	if err != nil || !ok || claimed.Job.ID != orphan {
+		t.Fatalf("setup claim: %v %v", ok, err)
+	}
+	e.waitState(orphan, queue.StatePending)
+}
+
+// Forced shutdown with a handler that ignores cancellation: the job must not
+// be handed to another worker while that handler still runs.
+func forcedShutdownNoOverlap(t *testing.T, newStore NewStore) {
+	e := newEnv(t, newStore)
+	var active, overlap, runs atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	e.register("stubborn", func(_ context.Context, _ Message) error {
+		if n := active.Add(1); n > 1 {
+			overlap.Add(1)
+		}
+		defer active.Add(-1)
+		if runs.Add(1) == 1 {
+			close(started)
+			<-release // ignores cancellation
+		}
+		return nil
+	})
+	id := e.enqueue("stubborn", Message{ID: 1})
+	first := e.worker(queue.WorkerOptions{Lease: 1500 * time.Millisecond, ReleaseTimeout: 100 * time.Millisecond})
+	e.start(first)
+	<-started
+
+	if err := shutdown(t, first, 100*time.Millisecond); err == nil {
+		t.Fatal("forced Shutdown returned nil")
+	}
+	// Another worker comes up at once. The job must stay leased to the stuck
+	// handler: no overlapping run while it executes.
+	e.start(e.worker(queue.WorkerOptions{Lease: 1500 * time.Millisecond}))
+	time.Sleep(600 * time.Millisecond)
+	if info := e.info(id); info.State != queue.StateRunning {
+		t.Fatalf("job is %s while its handler still runs; it must stay leased", info.State)
+	}
+	if overlap.Load() != 0 || runs.Load() != 1 {
+		t.Fatalf("job ran %d time(s), %d overlapping, while the first handler was stuck", runs.Load(), overlap.Load())
+	}
+	close(release)
+	e.waitState(id, queue.StateSucceeded)
 }

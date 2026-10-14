@@ -141,6 +141,11 @@ func parse(sub string, args []string, env forge.CommandEnv) (action, error) {
 	}
 }
 
+// safe escapes control characters and bidirectional overrides in text read
+// from the database, which other writers may have stored, so printing it can
+// never drive the operator's terminal.
+func safe(text string) string { return queue.EscapeUnsafe(text) }
+
 func explain(err error, id uuid.UUID) error {
 	switch {
 	case errors.Is(err, queue.ErrNotFound):
@@ -168,7 +173,7 @@ func status(ctx context.Context, admin queue.Admin, out io.Writer) error {
 		if q.OldestReadyAt != nil {
 			oldest = now.Sub(*q.OldestReadyAt).Round(time.Second).String()
 		}
-		fmt.Fprintf(table, "%s\t%d\t%d\t%d\t%d\t%d\t%s\n", q.Queue, q.Ready, q.Scheduled, q.Running, q.Dead, q.Succeeded, oldest)
+		fmt.Fprintf(table, "%s\t%d\t%d\t%d\t%d\t%d\t%s\n", safe(q.Queue), q.Ready, q.Scheduled, q.Running, q.Dead, q.Succeeded, oldest)
 	}
 	return table.Flush()
 }
@@ -188,7 +193,7 @@ func dead(ctx context.Context, admin queue.Admin, out io.Writer, queueName, kind
 			if item.FinishedAt != nil {
 				finished = item.FinishedAt.UTC().Format(time.RFC3339)
 			}
-			fmt.Fprintf(table, "%s\t%s\t%s\t%d/%d\t%s\t%s\n", item.Job.ID, item.Job.Queue, item.Job.Kind, item.Job.Attempt, item.Job.MaxAttempts, finished, abbreviate(item.LastError, errorColumn))
+			fmt.Fprintf(table, "%s\t%s\t%s\t%d/%d\t%s\t%s\n", item.Job.ID, safe(item.Job.Queue), safe(item.Job.Kind), item.Job.Attempt, item.Job.MaxAttempts, finished, abbreviate(safe(item.LastError), errorColumn))
 		}
 		listed += len(page.Items)
 		if page.Next == nil {
@@ -213,18 +218,18 @@ func show(ctx context.Context, admin queue.Admin, out io.Writer, id uuid.UUID) e
 	}
 	job := info.Job
 	fmt.Fprintf(out, "id:           %s\n", job.ID)
-	fmt.Fprintf(out, "kind:         %s\n", job.Kind)
-	fmt.Fprintf(out, "queue:        %s\n", job.Queue)
-	fmt.Fprintf(out, "state:        %s\n", info.State)
+	fmt.Fprintf(out, "kind:         %s\n", safe(job.Kind))
+	fmt.Fprintf(out, "queue:        %s\n", safe(job.Queue))
+	fmt.Fprintf(out, "state:        %s\n", safe(string(info.State)))
 	fmt.Fprintf(out, "attempts:     %d of %d\n", job.Attempt, job.MaxAttempts)
 	fmt.Fprintf(out, "priority:     %d\n", job.Priority)
 	fmt.Fprintf(out, "run at:       %s\n", job.RunAt.UTC().Format(time.RFC3339))
 	fmt.Fprintf(out, "enqueued at:  %s\n", job.EnqueuedAt.UTC().Format(time.RFC3339))
 	if job.Key != "" {
-		fmt.Fprintf(out, "key:          %s\n", job.Key)
+		fmt.Fprintf(out, "key:          %s\n", safe(job.Key))
 	}
 	if info.WorkerID != "" {
-		fmt.Fprintf(out, "worker:       %s\n", info.WorkerID)
+		fmt.Fprintf(out, "worker:       %s\n", safe(info.WorkerID))
 	}
 	if info.LeaseUntil != nil {
 		fmt.Fprintf(out, "lease until:  %s\n", info.LeaseUntil.UTC().Format(time.RFC3339))
@@ -233,7 +238,7 @@ func show(ctx context.Context, admin queue.Admin, out io.Writer, id uuid.UUID) e
 		fmt.Fprintf(out, "finished at:  %s\n", info.FinishedAt.UTC().Format(time.RFC3339))
 	}
 	if info.LastError != "" {
-		fmt.Fprintf(out, "last error:   %s\n", info.LastError)
+		fmt.Fprintf(out, "last error:   %s\n", safe(info.LastError))
 	}
 	return nil
 }
