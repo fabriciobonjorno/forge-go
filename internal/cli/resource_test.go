@@ -106,6 +106,9 @@ func TestParseResourceArgs(t *testing.T) {
 		{"duplicate field", []string{"product", "name:string", "name:text", "--global"}, "declared twice"},
 		{"go name collision", []string{"product", "i_d:int", "--global"}, "collides"},
 		{"clear flag collision", []string{"product", "note:text?", "clear_note:bool", "--global"}, "Clear"},
+		{"name already plural", []string{"products", "name:string", "--global"}, `"product"`},
+		{"name already plural ies", []string{"categories", "name:string", "--global"}, `"category"`},
+		{"name already plural es", []string{"boxes", "name:string", "--global"}, `"box"`},
 		{"apply collides with a method", []string{"product", "apply:bool", "--global"}, "collides"},
 		{"is_empty collides with a method", []string{"product", "is_empty:bool", "--global"}, "collides"},
 		{"version collides", []string{"product", "id:int", "--global"}, "reserved"},
@@ -699,5 +702,41 @@ func TestGlobalResourceWritesStayClosedInIdentityApplications(t *testing.T) {
 	identity.TenantScoped, identity.Identity, identity.Database = false, false, "mysql"
 	if wiring := resourceWiring(identity); strings.Contains(wiring, "protectPlatformWrite") || !strings.Contains(wiring, "no Forge identity") {
 		t.Errorf("unexpected wiring without identity:\n%s", wiring)
+	}
+}
+
+func TestLooksPlural(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]string{"products": "product", "categories": "category", "boxes": "box", "matches": "match", "order_items": "order_item"} {
+		if got, ok := looksPlural(name); !ok || got != want {
+			t.Errorf("looksPlural(%q) = %q, %v; want %q", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"product", "status", "address", "bus", "analysis", "photos", "class", "key", "category"} {
+		if got, ok := looksPlural(name); ok && name != "photos" {
+			t.Errorf("looksPlural(%q) = %q, want a singular name to pass", name, got)
+		}
+	}
+}
+
+func TestPluralNameIsAcceptedWithExplicitPlural(t *testing.T) {
+	t.Parallel()
+	got, err := parseResourceArgs([]string{"news", "title:string", "--global", "--plural", "news_items"})
+	if err != nil || got.Plural != "news_items" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestGenerateResourceRefusesAnExistingTableMigration(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "sqlite:storage/development.db")
+	writeFile(t, filepath.Join(root, "db", "migrations", "20260101000000_create_products.up.sql"), "CREATE TABLE products (id TEXT);\n")
+	before := snapshotTree(t, root)
+	_, err := runResource(root, "product", "name:string", "--global")
+	if err == nil || !strings.Contains(err.Error(), "already creates the table products") {
+		t.Fatalf("err = %v, want a refusal naming the existing migration", err)
+	}
+	if after := snapshotTree(t, root); !slices.Equal(before, after) {
+		t.Fatal("a refused run left files behind")
 	}
 }

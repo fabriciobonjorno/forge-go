@@ -354,17 +354,26 @@ func applyGeneratedFiles(rootPath string, directories []string, files []generate
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	for _, directory := range directories {
-		if err := ensureDirectoryTree(root, directory); err != nil {
-			return err
-		}
-	}
+	var createdDirectories []string
 	created := make([]string, 0, len(files))
+	// rollback removes what this call created: files first, then the
+	// directories it had to make, deepest first. A directory that is no
+	// longer empty is left alone and reported.
 	rollback := func(cause error) error {
 		for i := len(created) - 1; i >= 0; i-- {
 			cause = errors.Join(cause, root.Remove(created[i]))
 		}
+		for i := len(createdDirectories) - 1; i >= 0; i-- {
+			cause = errors.Join(cause, root.Remove(createdDirectories[i]))
+		}
 		return cause
+	}
+	for _, directory := range directories {
+		made, err := ensureDirectoryTree(root, directory)
+		createdDirectories = append(createdDirectories, made...)
+		if err != nil {
+			return rollback(err)
+		}
 	}
 	for _, planned := range files {
 		file, err := root.OpenFile(planned.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -381,7 +390,10 @@ func applyGeneratedFiles(rootPath string, directories []string, files []generate
 	return nil
 }
 
-func ensureDirectoryTree(root *os.Root, directory string) error {
+// ensureDirectoryTree creates missing directories and returns the ones it
+// created, outermost first.
+func ensureDirectoryTree(root *os.Root, directory string) ([]string, error) {
+	var made []string
 	current := ""
 	for _, part := range strings.Split(filepath.Clean(directory), string(filepath.Separator)) {
 		if part == "" || part == "." {
@@ -391,18 +403,19 @@ func ensureDirectoryTree(root *os.Root, directory string) error {
 		info, err := root.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
 			if err := root.Mkdir(current, 0o750); err != nil {
-				return err
+				return made, err
 			}
+			made = append(made, current)
 			continue
 		}
 		if err != nil {
-			return err
+			return made, err
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("refusing to write through non-directory path %s", current)
+			return made, fmt.Errorf("refusing to write through non-directory path %s", current)
 		}
 	}
-	return nil
+	return made, nil
 }
 
 func rejectExistingSymlinkPaths(root *os.Root, paths []string) error {

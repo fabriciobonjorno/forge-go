@@ -51,7 +51,7 @@ func matrixResources() [][]string {
 func reservedWordResources() [][]string {
 	return [][]string{
 		{
-			"edge_words", "change:int", "collation:string", "freeze:bool", "char:string", "only:int", "order:time", "group:uuid?",
+			"reserved_word", "change:int", "collation:string", "freeze:bool", "char:string", "only:int", "order:time", "group:uuid?",
 			"select:text", "user:int?", "--tenant-scoped",
 		},
 		{"group", "name:string", "--global"},

@@ -171,6 +171,9 @@ func parseResourceArgs(args []string) (resourceRequest, error) {
 		return resourceRequest{}, err
 	}
 	if !plural {
+		if singular, ok := looksPlural(request.Name); ok {
+			return resourceRequest{}, fmt.Errorf("resource name %q looks plural: name the resource in the singular (%q) or pass --plural to set the plural explicitly", request.Name, singular)
+		}
 		request.Plural = pluralize(request.Name)
 	}
 	if err := validateResourcePlural(request.Name, request.Plural, plural); err != nil {
@@ -305,6 +308,25 @@ var initialisms = map[string]string{
 	"sql": "SQL", "uri": "URI", "url": "URL", "uuid": "UUID", "xml": "XML",
 }
 
+// looksPlural reports whether a resource name appears to be a plural already
+// and suggests the singular. The generator would otherwise produce
+// "productses". Names that end in s, but are singular (status, address, bus,
+// analysis), pass.
+func looksPlural(name string) (string, bool) {
+	switch {
+	case strings.HasSuffix(name, "ies") && len(name) > 4:
+		return name[:len(name)-3] + "y", true
+	case !strings.HasSuffix(name, "s"), strings.HasSuffix(name, "ss"), strings.HasSuffix(name, "us"),
+		strings.HasSuffix(name, "is"), strings.HasSuffix(name, "os"):
+		return "", false
+	case strings.HasSuffix(name, "ses"), strings.HasSuffix(name, "xes"), strings.HasSuffix(name, "zes"),
+		strings.HasSuffix(name, "ches"), strings.HasSuffix(name, "shes"):
+		return name[:len(name)-2], true
+	default:
+		return name[:len(name)-1], true
+	}
+}
+
 // exportedName converts snake_case to an exported Go identifier.
 func exportedName(name string) string {
 	parts := strings.Split(name, "_")
@@ -354,6 +376,15 @@ func planResource(root string, request resourceRequest, env []string, now time.T
 	dir, version, err := nextMigrationVersion(projectRoot, now)
 	if err != nil {
 		return resourceSpec{}, nil, err
+	}
+	existingMigrations, err := fs.ReadDir(projectRoot.FS(), dir)
+	if err != nil {
+		return resourceSpec{}, nil, err
+	}
+	for _, entry := range existingMigrations {
+		if _, rest, ok := strings.Cut(entry.Name(), "_"); ok && strings.HasPrefix(rest, "create_"+request.Plural+".") {
+			return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %s already creates the table %s; pick another resource name or --plural", filepath.Join(dir, entry.Name()), request.Plural)
+		}
 	}
 	migrationBase := filepath.Join(dir, version+"_create_"+request.Plural)
 	rendered, err := renderResource(spec)
