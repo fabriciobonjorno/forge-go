@@ -359,3 +359,22 @@ func TestLongNamesRespectDatabaseIdentifierLimits(t *testing.T) {
 		t.Fatalf("identifiers exceed limits: user=%q database=%q", user, database)
 	}
 }
+
+// TestRootAppNameDoesNotCollideWithDatabaseRoot is a regression test: the
+// MySQL and MariaDB images refuse MYSQL_USER=root.
+func TestRootAppNameDoesNotCollideWithDatabaseRoot(t *testing.T) {
+	t.Parallel()
+	for _, database := range []string{"mysql", "mariadb"} {
+		dir := filepath.Join(t.TempDir(), "root")
+		if _, err := scaffold.Generate(scaffold.Options{Name: "root", Dir: dir, Database: database}); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if regexp.MustCompile(`(MYSQL|MARIADB)_USER: root\n`).Match(content) {
+			t.Errorf("%s: compose creates a second root user", database)
+		}
+	}
+}

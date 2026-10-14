@@ -52,8 +52,16 @@ func ServerURL(t testing.TB, adapter config.Adapter) string {
 			return raw
 		}
 	}
-	if required, _ := strconv.ParseBool(os.Getenv(EnvRequire)); required {
-		t.Fatalf("%s or %s is required when %s is set", EnvAdapterURL(adapter), EnvURL, EnvRequire)
+	if raw := os.Getenv(EnvRequire); raw != "" {
+		// A value that does not parse must not silently turn required
+		// database tests back into skips.
+		required, err := strconv.ParseBool(raw)
+		if err != nil {
+			t.Fatalf("%s must be true or false", EnvRequire)
+		}
+		if required {
+			t.Fatalf("%s or %s is required when %s is set", EnvAdapterURL(adapter), EnvURL, EnvRequire)
+		}
 	}
 	t.Skipf("set %s to run %s tests", EnvAdapterURL(adapter), adapter)
 	return ""

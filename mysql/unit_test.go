@@ -188,3 +188,18 @@ func TestOpenUnreachableHostFailsFast(t *testing.T) {
 		}
 	}
 }
+
+// TestUnknownParameterNamesAreNotEchoed is a regression test: with an
+// unencoded "?" in the password, part of the password became a parameter
+// name and was quoted in the startup error.
+func TestUnknownParameterNamesAreNotEchoed(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default().Database
+	// "p&secretpart" was meant as the password: the unencoded "&" made
+	// "secretpart" a parameter name.
+	cfg.URL = config.NewSecret("mysql://u@h/db?tls=false&secretpart")
+	_, err := mysql.Open(context.Background(), cfg)
+	if err == nil || strings.Contains(err.Error(), "secretpart") || !strings.Contains(err.Error(), "unsupported parameter") {
+		t.Fatalf("expected a generic unsupported-parameter error without the fragment, got %v", err)
+	}
+}

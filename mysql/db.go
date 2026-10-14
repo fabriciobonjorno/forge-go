@@ -49,6 +49,17 @@ const (
 	errInvalidURL    = "FORGE_DATABASE_URL must be mysql://user:password@host:port/database (percent-encode special characters in the password)"
 )
 
+// knownOptions are driver DSN options and session variables people commonly
+// try to pass; naming them in an error cannot reveal a secret.
+var knownOptions = map[string]bool{
+	"allowAllFiles": true, "allowCleartextPasswords": true, "allowNativePasswords": true, "allowOldPasswords": true,
+	"charset": true, "collation": true, "columnsWithAlias": true, "interpolateParams": true, "loc": true,
+	"maxAllowedPacket": true, "multiStatements": true, "parseTime": true, "password": true, "readTimeout": true,
+	"rejectReadOnly": true, "serverPubKey": true, "sql_mode": true, "time_zone": true, "timeout": true,
+	"writeTimeout": true, "max_execution_time": true, "max_statement_time": true, "autocommit": true,
+	"sslmode": true, "ssl-mode": true, "ssl": true,
+}
+
 // tlsModes are the accepted values of the tls URL parameter. true verifies
 // the server certificate; skip-verify and preferred encrypt without
 // verifying, so they can be intercepted; false disables TLS. Production
@@ -173,7 +184,12 @@ func parseParameters(rawQuery string) (string, error) {
 	slices.Sort(keys)
 	for _, key := range keys {
 		if key != "tls" {
-			return "", fmt.Errorf("FORGE_DATABASE_URL parameter %q is not supported: Forge sets the MySQL session itself and accepts only tls", key)
+			// Only well-known option names are echoed: an unencoded "?" in a
+			// password turns part of the password into a parameter name.
+			if knownOptions[key] {
+				return "", fmt.Errorf("FORGE_DATABASE_URL parameter %q is not supported: Forge sets the MySQL session itself and accepts only tls", key)
+			}
+			return "", errors.New("FORGE_DATABASE_URL has an unsupported parameter (percent-encode special characters in the password): Forge accepts only tls")
 		}
 	}
 	tls := values["tls"]

@@ -13,7 +13,7 @@ env:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:18-alpine
@@ -70,7 +70,7 @@ jobs:
   mariadb:
     # The mysql adapter also serves MariaDB, whose error codes and statement
     # timeout differ: run its tests against a real MariaDB too.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       mariadb:
         image: mariadb:11.8
@@ -95,7 +95,7 @@ jobs:
         run: go test -race -count=1 ./mysql/...
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
