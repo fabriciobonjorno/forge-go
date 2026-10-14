@@ -559,7 +559,7 @@ func TestResourceTenantScopeShapesTheGeneratedCode(t *testing.T) {
 		}
 	}
 	if up := render("postgres", true).migrationUp; !strings.Contains(up, "FORCE ROW LEVEL SECURITY") || !strings.Contains(up, `CREATE POLICY "products_tenant"`) ||
-		!strings.Contains(up, "WITH CHECK") || !strings.Contains(persistence(render("postgres", true)), "InTenantTx") {
+		!strings.Contains(up, "WITH CHECK") || !strings.Contains(up, "BYPASSRLS maintenance role") || !strings.Contains(persistence(render("postgres", true)), "InTenantTx") {
 		t.Errorf("PostgreSQL tenant-scoped resources must enable forced RLS and run in InTenantTx:\n%s", up)
 	}
 	for _, database := range []string{"mysql", "sqlite"} {

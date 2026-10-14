@@ -306,6 +306,7 @@ func renderMigration(v resourceView) (up, down string) {
 	if v.Tenant && v.Postgres {
 		predicate := q("tenant_id") + " = NULLIF(current_setting('forge.tenant_id', true), '')::uuid"
 		fmt.Fprintf(&sql, "\n-- Defense in depth: even a query that forgets its tenant_id predicate sees only\n-- the tenant set by InTenantTx. FORCE applies the policy to the table owner too.\n")
+		fmt.Fprintf(&sql, "-- Because migrations run as the owner, a later data migration that reads or writes this\n-- table must first set the tenant (SELECT set_config('forge.tenant_id', '<tenant uuid>', true)\n-- inside the migration) or run with a BYPASSRLS maintenance role.\n")
 		fmt.Fprintf(&sql, "ALTER TABLE %s ENABLE ROW LEVEL SECURITY;\nALTER TABLE %s FORCE ROW LEVEL SECURITY;\n\n", q(table), q(table))
 		fmt.Fprintf(&sql, "CREATE POLICY %s ON %s\n    USING (%s)\n    WITH CHECK (%s);\n", q(table+"_tenant"), q(table), predicate, predicate)
 	}
