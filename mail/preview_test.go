@@ -13,9 +13,17 @@ import (
 	forgemail "github.com/fabriciobonjorno/forge-go/mail"
 )
 
+// previewConfig is a configuration that explicitly opted in to previews.
+func previewConfig(env config.Environment) config.Config {
+	cfg := config.Default()
+	cfg.Environment = env
+	cfg.Mail.Preview = true
+	return cfg
+}
+
 func previewHandler(t *testing.T) http.Handler {
 	t.Helper()
-	handler, err := forgemail.NewPreviewHandler(config.Development, "/_mail",
+	handler, err := forgemail.NewPreviewHandler(previewConfig(config.Development), "/_mail",
 		forgemail.Preview{Name: "welcome", Description: "Sent after sign-up <b>", Build: func(context.Context) (forgemail.Message, error) {
 			msg := baseMessage()
 			msg.Subject = `Welcome <script>alert(1)</script>`
@@ -50,12 +58,12 @@ func get(handler http.Handler, method, path string) *httptest.ResponseRecorder {
 func TestPreviewIsRefusedOutsideDevelopment(t *testing.T) {
 	t.Parallel()
 	for _, env := range []config.Environment{config.Production, config.Staging, "", "unknown"} {
-		if _, err := forgemail.NewPreviewHandler(env, "/_mail"); err == nil {
+		if _, err := forgemail.NewPreviewHandler(previewConfig(env), "/_mail"); err == nil {
 			t.Errorf("preview created in %q", env)
 		}
 	}
 	for _, env := range []config.Environment{config.Development, config.Test} {
-		if _, err := forgemail.NewPreviewHandler(env, "/_mail"); err != nil {
+		if _, err := forgemail.NewPreviewHandler(previewConfig(env), "/_mail"); err != nil {
 			t.Errorf("preview refused in %q: %v", env, err)
 		}
 	}
@@ -82,7 +90,7 @@ func TestPreviewValidatesRegistration(t *testing.T) {
 		"name too long":          {"/_mail", []forgemail.Preview{{Name: strings.Repeat("a", 65), Build: build}}},
 		"leading hyphen in name": {"/_mail", []forgemail.Preview{{Name: "-x", Build: build}}},
 	} {
-		if _, err := forgemail.NewPreviewHandler(config.Development, tc.prefix, tc.previews...); err == nil {
+		if _, err := forgemail.NewPreviewHandler(previewConfig(config.Development), tc.prefix, tc.previews...); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}

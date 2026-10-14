@@ -34,19 +34,28 @@ var previewName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 // source. Messages go through the real encoder, so the page shows exactly the
 // validation error production would hit.
 //
-// It is for development: it refuses to be created in any environment other
-// than development and test, so a forgotten route cannot expose templates or
-// fixture data in production. Register it on a subtree pattern:
+// It is for development and takes two independent switches, both required:
+// FORGE_ENV must be development or test, and FORGE_MAIL_PREVIEW=true must be
+// set explicitly (cfg.Mail.Preview). The second one matters because an unset
+// FORGE_ENV means development: a production container that lost its
+// environment would otherwise serve the previews. Config validation rejects
+// FORGE_MAIL_PREVIEW outside development and test. Register the handler on a
+// subtree pattern:
 //
-//	handler, err := mail.NewPreviewHandler(cfg.Environment, "/_mail", previews...)
-//	mux.Handle("GET /_mail/", handler)
+//	if cfg.Mail.Preview {
+//	    handler, err := mail.NewPreviewHandler(cfg, "/_mail", previews...)
+//	    mux.Handle("GET /_mail/", handler)
+//	}
 //
 // HTML previews are served with a restrictive Content-Security-Policy
 // (no scripts, no forms, no navigation) and inside a sandboxed iframe, so
 // even hostile template data cannot run script in the developer's browser.
-func NewPreviewHandler(env config.Environment, prefix string, previews ...Preview) (http.Handler, error) {
-	if env != config.Development && env != config.Test {
+func NewPreviewHandler(cfg config.Config, prefix string, previews ...Preview) (http.Handler, error) {
+	if cfg.Environment != config.Development && cfg.Environment != config.Test {
 		return nil, errors.New("mail: previews are available only in development and test")
+	}
+	if !cfg.Mail.Preview {
+		return nil, errors.New("mail: previews need FORGE_MAIL_PREVIEW=true (explicit opt-in)")
 	}
 	if !strings.HasPrefix(prefix, "/") || strings.HasSuffix(prefix, "/") || strings.ContainsAny(prefix, "?#\\ ") {
 		return nil, errors.New("mail: preview prefix must look like \"/_mail\"")
@@ -81,7 +90,9 @@ func (h *previewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rest, ok := strings.CutPrefix(r.URL.Path, h.prefix)
-	if !ok {
+	// The prefix must end at a path segment: "/_mailwelcome" is not under
+	// "/_mail".
+	if !ok || (rest != "" && rest[0] != '/') {
 		http.NotFound(w, r)
 		return
 	}

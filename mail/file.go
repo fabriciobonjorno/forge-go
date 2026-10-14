@@ -47,6 +47,11 @@ func NewFileSender(dir string, logger *slog.Logger) (*FileSender, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// Mail written to files is never delivered. Say so loudly, once, so a
+	// misconfigured deployment (a development URL that survived into
+	// production) shows up in the first lines of the log instead of as
+	// customers who never receive their email.
+	logger.Warn("development mail sender active: messages are written to files and NOT delivered", "dir", dir)
 	return &FileSender{root: root, dir: dir, logger: logger, now: time.Now}, nil
 }
 

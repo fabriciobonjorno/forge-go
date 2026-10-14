@@ -99,6 +99,13 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.Mail.AllowPlaintext = parsed
 	}
+	if value, ok := lookup("FORGE_MAIL_PREVIEW"); ok {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, invalidValue("FORGE_MAIL_PREVIEW", "true or false")
+		}
+		cfg.Mail.Preview = parsed
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}

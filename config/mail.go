@@ -51,6 +51,11 @@ type Mail struct {
 	AllowPlaintext bool
 	// Timeout bounds one delivery attempt. Zero means 30 seconds.
 	Timeout time.Duration
+	// Preview enables the development mail preview handler
+	// (FORGE_MAIL_PREVIEW=true). It must be set deliberately: an unset
+	// FORGE_ENV means development, so the environment alone is not a safe
+	// gate. Only valid in development and test.
+	Preview bool
 	// CAFile is a PEM bundle of extra trusted roots for a private mail relay.
 	// There is no setting to skip certificate verification.
 	CAFile string
@@ -141,6 +146,9 @@ func parseMailURL(raw string) (MailTransport, *url.URL) {
 }
 
 func (m Mail) validate(environment Environment) error {
+	if m.Preview && environment != Development && environment != Test {
+		return errors.New("FORGE_MAIL_PREVIEW is only allowed when FORGE_ENV is development or test")
+	}
 	if m.Timeout < 0 || m.Timeout > maxMailTimeout {
 		return errors.New("FORGE_MAIL_TIMEOUT must be positive and at most 10m")
 	}
