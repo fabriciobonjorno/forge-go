@@ -3,6 +3,8 @@ package recoverymail_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -26,6 +28,7 @@ func newSender(t *testing.T, sender mail.Sender, mutate func(*recoverymail.Confi
 		AppName:  "Acme",
 		ResetURL: "https://app.example.com/reset-password",
 		Now:      func() time.Time { return fixedNow },
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -183,7 +186,7 @@ func TestRejectsBadRecipientAndTokenWithoutLeaking(t *testing.T) {
 func TestConfigValidation(t *testing.T) {
 	t.Parallel()
 	recorder := mailtest.NewRecorder()
-	good := recoverymail.Config{From: mail.Address{Email: "a@example.com"}, AppName: "Acme", ResetURL: "https://app.example.com/reset"}
+	good := recoverymail.Config{From: mail.Address{Email: "a@example.com"}, AppName: "Acme", ResetURL: "https://app.example.com/reset", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	bad := map[string]func(*recoverymail.Config){
 		"no app name":         func(c *recoverymail.Config) { c.AppName = " " },
 		"long app name":       func(c *recoverymail.Config) { c.AppName = strings.Repeat("a", 101) },
