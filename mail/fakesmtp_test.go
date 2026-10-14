@@ -144,7 +144,7 @@ func (s *fakeSMTP) serve() {
 }
 
 func (s *fakeSMTP) handle(raw net.Conn) {
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	session := &smtpSession{}
 	s.mu.Lock()
 	s.sessions = append(s.sessions, session)
@@ -155,7 +155,7 @@ func (s *fakeSMTP) handle(raw net.Conn) {
 		f()
 	}
 
-	var conn net.Conn = raw
+	conn := raw
 	if s.implicitTLS {
 		tlsConn := tls.Server(raw, s.tlsConfig())
 		if err := tlsConn.Handshake(); err != nil {
