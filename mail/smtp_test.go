@@ -451,3 +451,24 @@ func TestNewSMTPSenderValidation(t *testing.T) {
 		t.Fatal("SMTPConfig formatting leaks the password")
 	}
 }
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+// The connection deadline and the context deadline are the same instant, so
+// the I/O timeout can surface before ctx.Err() does. Both orders must report
+// context.DeadlineExceeded.
+func TestSMTPIOTimeoutBeforeContextExpiryReportsDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+	sender, err := forgemail.NewSMTPSender(forgemail.SMTPConfig{Host: "mail.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = forgemail.ClassifyForTest(sender, context.Background(), "data", timeoutError{})
+	if !errors.Is(err, forgemail.ErrUnavailable) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+}

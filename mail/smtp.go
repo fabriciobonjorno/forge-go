@@ -72,6 +72,8 @@ type SMTPConfig struct {
 // use.
 type SMTPSender struct {
 	cfg SMTPConfig
+	// dialer replaces the network dial in tests.
+	dialer func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // NewSMTPSender validates cfg and returns a sender. It performs no network
@@ -220,6 +222,9 @@ func (s *SMTPSender) tlsConfig() *tls.Config {
 func (s *SMTPSender) dial(ctx context.Context) (net.Conn, error) {
 	address := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	dialer := &net.Dialer{Timeout: s.cfg.DialTimeout}
+	if s.dialer != nil {
+		return s.dialer(ctx, "tcp", address)
+	}
 	if s.cfg.ImplicitTLS {
 		return (&tls.Dialer{NetDialer: dialer, Config: s.tlsConfig()}).DialContext(ctx, "tcp", address)
 	}
@@ -333,7 +338,10 @@ func (s *SMTPSender) classify(ctx context.Context, stage string, err error) erro
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return transient(stage, 0, err)
+		// The connection deadline equals the context deadline, so the I/O
+		// error can be observed a moment before ctx.Err() flips. A timeout
+		// is a deadline expiry either way; report it consistently.
+		return transient(stage, 0, errors.Join(context.DeadlineExceeded, err))
 	}
 	if stage == "starttls" || isTLSError(err) {
 		return withFault(ErrTLSFailed, stage, 0, err)
