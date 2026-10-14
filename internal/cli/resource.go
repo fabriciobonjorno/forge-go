@@ -46,33 +46,6 @@ var fileNameSuffixes = []string{
 	"sparc64", "wasm",
 }
 
-// reservedSQLWords are words PostgreSQL, MySQL, MariaDB or SQLite refuse as
-// an unquoted column or table name (checked against PostgreSQL 18, MySQL 8.4,
-// MariaDB 11.8 and SQLite). Field names and the table name are emitted unquoted, so
-// they must not be one of these.
-var reservedSQLWords = strings.Fields(`
-	add all alter analyze and any array as asc asensitive asymmetric authorization autoincrement before between bigint
-	binary blob both by call cascade case cast check collate column commit condition constraint continue convert create
-	cross cube cume_dist current current_date current_time current_timestamp current_user cursor database databases
-	day_hour day_microsecond day_minute day_second dec decimal declare default deferrable delayed delete dense_rank desc
-	describe deterministic distinct distinctrow div do double drop dual each else elseif empty enclosed end escape
-	escaped except exclude exists exit explain false fetch filter first_value float float4 float8 following for force
-	foreign from full fulltext function generated get glob grant group grouping groups having high_priority
-	hour_microsecond hour_minute hour_second if ignore ilike in index indexed infile initially inner inout insensitive
-	insert int int1 int2 int3 int4 int8 integer intersect interval into io_after_gtids io_before_gtids is isnull join
-	json_table key keys kill lag last_value lateral lead leading leave left like limit linear lines load localtime
-	localtimestamp lock long longblob longtext loop low_priority match materialized maxvalue mediumblob mediumint
-	mediumtext middleint minute_microsecond minute_second mod modifies natural no_write_to_binlog not nothing notnull
-	nth_value ntile null nulls numeric of offset on optimize option optionally or order out outer over overlaps
-	partition placing precision preceding primary procedure purge qualify range rank read reads read_write real
-	recursive references regexp release rename repeat replace require resignal restrict return returning revoke right
-	rlike row rows row_number schema schemas second_microsecond select sensitive separator session_user set show signal
-	similar smallint some spatial specific sql sqlexception sqlstate sqlwarning sql_big_result sql_calc_found_rows
-	sql_small_result ssl starting stored straight_join symmetric system table then tinyblob tinyint tinytext to trailing
-	transaction trigger true unbounded undo union unique unlock unsigned update usage use user using utc_date utc_time
-	utc_timestamp values varbinary varchar varcharacter varying verbose virtual when where while window with write xor
-	year_month zerofill`)
-
 // reservedGoMembers are the exported fields and methods of the generated
 // entity and changes types (ID, Version, CreatedAt, UpdatedAt, Apply and
 // IsEmpty); a user field that exports to one of them would not compile. A
@@ -269,8 +242,6 @@ func validateResourcePlural(name, plural string, explicit bool) error {
 		return fmt.Errorf("plural %q ends in a word Go treats as a file-name build constraint; pass another --plural", plural)
 	case strings.HasPrefix(plural, "forge_") || strings.HasPrefix(plural, "sqlite_"):
 		return fmt.Errorf("plural %q uses a table-name prefix reserved for Forge and SQLite internals", plural)
-	case isReservedSQLWord(plural):
-		return fmt.Errorf("plural %q is a reserved SQL word and would be an unsafe table name; pass another --plural", plural)
 	}
 	return nil
 }
@@ -289,8 +260,6 @@ func parseResourceField(declaration string) (resourceField, error) {
 		return resourceField{}, fmt.Errorf("field name %q must be snake_case (lowercase letters and digits, starting with a letter, at most %d characters)", name, maxResourceNameLength)
 	case slices.Contains(reservedColumns, name):
 		return resourceField{}, fmt.Errorf("field name %q is reserved: every table already has %s", name, strings.Join(reservedColumns, ", "))
-	case isReservedSQLWord(name):
-		return resourceField{}, fmt.Errorf("field name %q is a reserved SQL word and would be an unsafe column name; choose another", name)
 	case !slices.Contains(resourceFieldTypes, kind):
 		return resourceField{}, fmt.Errorf("field %q has unsupported type %q (types: %s; use int for money in minor units)", name, kind, strings.Join(resourceFieldTypes, ", "))
 	}
@@ -314,10 +283,6 @@ func validateIdentifierLengths(request resourceRequest) error {
 func hasFileNameSuffix(name string) bool {
 	segments := strings.Split(name, "_")
 	return len(segments) > 1 && slices.Contains(fileNameSuffixes, segments[len(segments)-1])
-}
-
-func isReservedSQLWord(word string) bool {
-	return slices.Contains(reservedSQLWords, word)
 }
 
 // pluralize applies the built-in rules: consonant+y becomes ies; s, x, z, ch

@@ -454,7 +454,7 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 		_, _ = database.Exec(context.Background(), "DROP OWNED BY "+quotedRole)
 		_, _ = database.Exec(context.Background(), "DROP ROLE "+quotedRole)
 	})
-	if _, err := database.Exec(ctx, "GRANT SELECT, INSERT, UPDATE, DELETE ON [[.Plural]] TO "+quotedRole); err != nil {
+	if _, err := database.Exec(ctx, `GRANT SELECT, INSERT, UPDATE, DELETE ON [[.Q .Plural]] TO `+quotedRole); err != nil {
 		t.Fatal(err)
 	}
 
@@ -465,20 +465,20 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 			return err
 		}
 		var visible, foreignVisible int
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM [[.Plural]]").Scan(&visible); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM [[.Plural]] WHERE id = $1", foreign.ID).Scan(&foreignVisible); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]] WHERE [[.Q "id"]] = $1`, foreign.ID).Scan(&foreignVisible); err != nil {
 			return err
 		}
 		if visible != 1 || foreignVisible != 0 {
 			t.Errorf("tenant A sees %d rows (%d of tenant B's), want exactly its own", visible, foreignVisible)
 		}
-		update, err := tx.Exec(ctx, "UPDATE [[.Plural]] SET version = version + 1 WHERE id = $1", foreign.ID)
+		update, err := tx.Exec(ctx, `UPDATE [[.Q .Plural]] SET [[.Q "version"]] = [[.Q "version"]] + 1 WHERE [[.Q "id"]] = $1`, foreign.ID)
 		if err != nil {
 			return err
 		}
-		remove, err := tx.Exec(ctx, "DELETE FROM [[.Plural]] WHERE id = $1", foreign.ID)
+		remove, err := tx.Exec(ctx, `DELETE FROM [[.Q .Plural]] WHERE [[.Q "id"]] = $1`, foreign.ID)
 		if err != nil {
 			return err
 		}
@@ -488,7 +488,7 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 		if _, err := tx.Exec(ctx, "SAVEPOINT cross_tenant_insert"); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, "[[.RawInsert]]", [[.RawInsertArgs]])
+		_, err = tx.Exec(ctx, `[[.RawInsert]]`, [[.RawInsertArgs]])
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
 			t.Errorf("inserting a row for tenant B as tenant A: err = %v, want a row-level security violation (42501)", err)
@@ -506,7 +506,7 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 			return err
 		}
 		var visible int
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM [[.Plural]]").Scan(&visible); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
 			return err
 		}
 		if visible != 0 {

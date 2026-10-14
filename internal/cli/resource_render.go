@@ -294,12 +294,12 @@ func (v resourceView) InvalidCases() []invalidCase {
 // tenant as tenantID.
 func (v resourceView) RawInsert() string {
 	names, placeholders := v.rawInsertColumns()
-	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", v.Plural, strings.Join(names, ", "), strings.Join(placeholders, ", "))
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", v.Q(v.Plural), strings.Join(names, ", "), strings.Join(placeholders, ", "))
 }
 
 func (v resourceView) rawInsertColumns() (names, placeholders []string) {
 	add := func(name string) {
-		names = append(names, name)
+		names = append(names, v.Q(name))
 		placeholders = append(placeholders, fmt.Sprintf("$%d", len(names)))
 	}
 	add("id")

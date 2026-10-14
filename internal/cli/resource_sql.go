@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -15,6 +16,33 @@ type statement struct {
 // ArgList renders the bound arguments for a call.
 func (s statement) ArgList() string { return strings.Join(s.Args, ", ") }
 
+// GoLiteral renders the SQL as a Go string literal: a raw literal, or quoted
+// lines when the SQL itself contains backticks (MySQL identifier quotes).
+func (s statement) GoLiteral() string { return goStringLiteral(s.SQL) }
+
+func goStringLiteral(sql string) string {
+	if !strings.Contains(sql, "`") {
+		return "`" + sql + "`"
+	}
+	lines := strings.SplitAfter(sql, "\n")
+	for i, line := range lines {
+		lines[i] = strconv.Quote(line)
+	}
+	return strings.Join(lines, " +\n\t\t")
+}
+
+// quoteIdentifier quotes a validated snake_case name for the database, so a
+// name that is a reserved word in any of them still works.
+func quoteIdentifier(database, name string) string {
+	if database == "mysql" {
+		return "`" + name + "`"
+	}
+	return `"` + name + `"`
+}
+
+// Q quotes an identifier for the application's database.
+func (v resourceView) Q(name string) string { return quoteIdentifier(v.Database, name) }
+
 type sqlStatements struct {
 	Columns   string // entity columns, in scan order
 	Insert    statement
@@ -27,6 +55,7 @@ type sqlStatements struct {
 }
 
 func buildStatements(v resourceView) sqlStatements {
+	q := v.Q
 	placeholder := func(n int) string {
 		if v.Postgres {
 			return fmt.Sprintf("$%d", n)
@@ -45,62 +74,62 @@ func buildStatements(v resourceView) sqlStatements {
 		if !v.Tenant {
 			return ""
 		}
-		return "tenant_id = " + add(b, "tenantID") + " AND "
+		return q("tenant_id") + " = " + add(b, "tenantID") + " AND "
 	}
 
-	columns := []string{"id"}
+	columns := []string{q("id")}
 	for _, f := range v.Fields {
-		columns = append(columns, f.Name)
+		columns = append(columns, q(f.Name))
 	}
-	columns = append(columns, "version", "created_at", "updated_at")
+	columns = append(columns, q("version"), q("created_at"), q("updated_at"))
 	list := strings.Join(columns, ", ")
 	statements := sqlStatements{Columns: list}
 
 	// INSERT binds tenant_id right after id.
 	{
 		var b builder
-		names := []string{"id"}
+		names := []string{q("id")}
 		values := []string{add(&b, "entity.ID")}
 		if v.Tenant {
-			names = append(names, "tenant_id")
+			names = append(names, q("tenant_id"))
 			values = append(values, add(&b, "tenantID"))
 		}
 		for _, f := range v.Fields {
-			names = append(names, f.Name)
+			names = append(names, q(f.Name))
 			values = append(values, add(&b, "entity."+f.Title))
 		}
 		for _, column := range []struct{ name, expr string }{
 			{"version", "entity.Version"}, {"created_at", "entity.CreatedAt"}, {"updated_at", "entity.UpdatedAt"},
 		} {
-			names = append(names, column.name)
+			names = append(names, q(column.name))
 			values = append(values, add(&b, column.expr))
 		}
 		statements.Insert = statement{
-			SQL:  fmt.Sprintf("INSERT INTO %s (%s)\nVALUES (%s)", v.Plural, strings.Join(names, ", "), strings.Join(values, ", ")),
+			SQL:  fmt.Sprintf("INSERT INTO %s (%s)\nVALUES (%s)", q(v.Plural), strings.Join(names, ", "), strings.Join(values, ", ")),
 			Args: b.args,
 		}
 	}
 	{
 		var b builder
-		where := tenantPredicate(&b) + "id = " + add(&b, "id")
-		statements.Select = statement{SQL: fmt.Sprintf("SELECT %s FROM %s WHERE %s", list, v.Plural, where), Args: b.args}
+		where := tenantPredicate(&b) + q("id") + " = " + add(&b, "id")
+		statements.Select = statement{SQL: fmt.Sprintf("SELECT %s FROM %s WHERE %s", list, q(v.Plural), where), Args: b.args}
 	}
 	{
 		var b builder
 		where := ""
 		if v.Tenant {
-			where = " WHERE tenant_id = " + add(&b, "tenantID")
+			where = " WHERE " + q("tenant_id") + " = " + add(&b, "tenantID")
 		}
 		statements.ListFirst = statement{
-			SQL:  fmt.Sprintf("SELECT %s FROM %s%s ORDER BY id DESC LIMIT %s", list, v.Plural, where, add(&b, "limit")),
+			SQL:  fmt.Sprintf("SELECT %s FROM %s%s ORDER BY "+q("id")+" DESC LIMIT %s", list, q(v.Plural), where, add(&b, "limit")),
 			Args: b.args,
 		}
 	}
 	{
 		var b builder
-		where := tenantPredicate(&b) + "id < " + add(&b, "after")
+		where := tenantPredicate(&b) + q("id") + " < " + add(&b, "after")
 		statements.ListAfter = statement{
-			SQL:  fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY id DESC LIMIT %s", list, v.Plural, where, add(&b, "limit")),
+			SQL:  fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY "+q("id")+" DESC LIMIT %s", list, q(v.Plural), where, add(&b, "limit")),
 			Args: b.args,
 		}
 	}
@@ -108,24 +137,24 @@ func buildStatements(v resourceView) sqlStatements {
 		var b builder
 		assignments := make([]string, 0, len(v.Fields)+2)
 		for _, f := range v.Fields {
-			assignments = append(assignments, f.Name+" = "+add(&b, "entity."+f.Title))
+			assignments = append(assignments, q(f.Name)+" = "+add(&b, "entity."+f.Title))
 		}
-		assignments = append(assignments, "updated_at = "+add(&b, "entity.UpdatedAt"), "version = version + 1")
-		where := tenantPredicate(&b) + "id = " + add(&b, "entity.ID") + " AND version = " + add(&b, "entity.Version")
+		assignments = append(assignments, q("updated_at")+" = "+add(&b, "entity.UpdatedAt"), q("version")+" = "+q("version")+" + 1")
+		where := tenantPredicate(&b) + q("id") + " = " + add(&b, "entity.ID") + " AND " + q("version") + " = " + add(&b, "entity.Version")
 		statements.Update = statement{
-			SQL:  fmt.Sprintf("UPDATE %s\nSET %s\nWHERE %s", v.Plural, strings.Join(assignments, ", "), where),
+			SQL:  fmt.Sprintf("UPDATE %s\nSET %s\nWHERE %s", q(v.Plural), strings.Join(assignments, ", "), where),
 			Args: b.args,
 		}
 	}
 	{
 		var b builder
-		where := tenantPredicate(&b) + "id = " + add(&b, "id") + " AND version = " + add(&b, "version")
-		statements.Delete = statement{SQL: fmt.Sprintf("DELETE FROM %s WHERE %s", v.Plural, where), Args: b.args}
+		where := tenantPredicate(&b) + q("id") + " = " + add(&b, "id") + " AND version = " + add(&b, "version")
+		statements.Delete = statement{SQL: fmt.Sprintf("DELETE FROM %s WHERE %s", q(v.Plural), where), Args: b.args}
 	}
 	{
 		var b builder
-		where := tenantPredicate(&b) + "id = " + add(&b, "id")
-		statements.Exists = statement{SQL: fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s WHERE %s)", v.Plural, where), Args: b.args}
+		where := tenantPredicate(&b) + q("id") + " = " + add(&b, "id")
+		statements.Exists = statement{SQL: fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s WHERE %s)", q(v.Plural), where), Args: b.args}
 	}
 	return statements
 }
@@ -143,11 +172,12 @@ func columnDefinition(database, table string, f resourceField) string {
 	if f.Optional {
 		null = ""
 	}
+	q := func(name string) string { return quoteIdentifier(database, name) }
 	switch database {
 	case "postgres":
 		switch f.Type {
 		case "string":
-			return fmt.Sprintf("text%s CONSTRAINT %s_%s_length CHECK (char_length(%s) <= 255)", null, table, f.Name, f.Name)
+			return fmt.Sprintf("text%s CONSTRAINT %s CHECK (char_length(%s) <= 255)", null, q(table+"_"+f.Name+"_length"), q(f.Name))
 		case "text":
 			return "text" + null
 		case "int":
@@ -177,60 +207,63 @@ func columnDefinition(database, table string, f resourceField) string {
 	default: // sqlite: STRICT tables allow only INT, INTEGER, REAL, TEXT, BLOB and ANY.
 		switch f.Type {
 		case "string":
-			return fmt.Sprintf("TEXT%s CONSTRAINT %s_%s_length CHECK (length(%s) <= 255)", null, table, f.Name, f.Name)
+			return fmt.Sprintf("TEXT%s CONSTRAINT %s CHECK (length(%s) <= 255)", null, q(table+"_"+f.Name+"_length"), q(f.Name))
 		case "text", "time", "uuid":
 			return "TEXT" + null
 		case "int":
 			return "INTEGER" + null
 		default: // bool
-			return fmt.Sprintf("INTEGER%s CONSTRAINT %s_%s_boolean CHECK (%s IN (0, 1))", null, table, f.Name, f.Name)
+			return fmt.Sprintf("INTEGER%s CONSTRAINT %s CHECK (%s IN (0, 1))", null, q(table+"_"+f.Name+"_boolean"), q(f.Name))
 		}
 	}
 }
 
 // renderMigration builds the up and down migrations. The table has the same
 // shape on every database: a UUIDv7 key, the user's fields, an optimistic
-// locking version and UTC timestamps.
+// locking version and UTC timestamps. Every identifier is quoted, so a field
+// or table named like a reserved word works.
 func renderMigration(v resourceView) (up, down string) {
 	table := v.Plural
+	q := v.Q
 	var columns []column
 	switch {
 	case v.Postgres:
-		columns = append(columns, column{"id", "uuid PRIMARY KEY DEFAULT uuidv7()"})
+		columns = append(columns, column{q("id"), "uuid PRIMARY KEY DEFAULT uuidv7()"})
 	case v.MySQL:
-		columns = append(columns, column{"id", "CHAR(36) NOT NULL PRIMARY KEY"})
+		columns = append(columns, column{q("id"), "CHAR(36) NOT NULL PRIMARY KEY"})
 	default:
-		columns = append(columns, column{"id", "TEXT NOT NULL PRIMARY KEY"})
+		columns = append(columns, column{q("id"), "TEXT NOT NULL PRIMARY KEY"})
 	}
 	if v.Tenant {
 		switch {
 		case v.Postgres:
-			columns = append(columns, column{"tenant_id", "uuid NOT NULL"})
+			columns = append(columns, column{q("tenant_id"), "uuid NOT NULL"})
 		case v.MySQL:
-			columns = append(columns, column{"tenant_id", "CHAR(36) NOT NULL"})
+			columns = append(columns, column{q("tenant_id"), "CHAR(36) NOT NULL"})
 		default:
-			columns = append(columns, column{"tenant_id", "TEXT NOT NULL"})
+			columns = append(columns, column{q("tenant_id"), "TEXT NOT NULL"})
 		}
 	}
 	for _, f := range v.Fields {
-		columns = append(columns, column{f.Name, columnDefinition(v.Database, table, f.resourceField)})
+		columns = append(columns, column{q(f.Name), columnDefinition(v.Database, table, f.resourceField)})
 	}
+	versionConstraint := q(table + "_version_positive")
 	switch {
 	case v.Postgres:
 		columns = append(columns,
-			column{"version", fmt.Sprintf("integer NOT NULL DEFAULT 1 CONSTRAINT %s_version_positive CHECK (version >= 1)", table)},
-			column{"created_at", "timestamptz NOT NULL"},
-			column{"updated_at", "timestamptz NOT NULL"})
+			column{q("version"), fmt.Sprintf("bigint NOT NULL DEFAULT 1 CONSTRAINT %s CHECK (%s >= 1)", versionConstraint, q("version"))},
+			column{q("created_at"), "timestamptz NOT NULL"},
+			column{q("updated_at"), "timestamptz NOT NULL"})
 	case v.MySQL:
 		columns = append(columns,
-			column{"version", "INT NOT NULL DEFAULT 1"},
-			column{"created_at", "DATETIME(6) NOT NULL"},
-			column{"updated_at", "DATETIME(6) NOT NULL"})
+			column{q("version"), "BIGINT NOT NULL DEFAULT 1"},
+			column{q("created_at"), "DATETIME(6) NOT NULL"},
+			column{q("updated_at"), "DATETIME(6) NOT NULL"})
 	default:
 		columns = append(columns,
-			column{"version", fmt.Sprintf("INTEGER NOT NULL DEFAULT 1 CONSTRAINT %s_version_positive CHECK (version >= 1)", table)},
-			column{"created_at", "TEXT NOT NULL"},
-			column{"updated_at", "TEXT NOT NULL"})
+			column{q("version"), fmt.Sprintf("INTEGER NOT NULL DEFAULT 1 CONSTRAINT %s CHECK (%s >= 1)", versionConstraint, q("version"))},
+			column{q("created_at"), "TEXT NOT NULL"},
+			column{q("updated_at"), "TEXT NOT NULL"})
 	}
 
 	width := 0
@@ -241,10 +274,11 @@ func renderMigration(v resourceView) (up, down string) {
 	for _, c := range columns {
 		lines = append(lines, fmt.Sprintf("    %-*s %s", width, c.name, c.definition))
 	}
+	indexName := q(table + "_tenant_id_idx")
 	if v.MySQL {
-		lines = append(lines, fmt.Sprintf("    CONSTRAINT %s_version_positive CHECK (version >= 1)", table))
+		lines = append(lines, fmt.Sprintf("    CONSTRAINT %s CHECK (%s >= 1)", versionConstraint, q("version")))
 		if v.Tenant {
-			lines = append(lines, fmt.Sprintf("    INDEX %s_tenant_id_idx (tenant_id, id)", table))
+			lines = append(lines, fmt.Sprintf("    INDEX %s (%s, %s)", indexName, q("tenant_id"), q("id")))
 		}
 	}
 
@@ -258,7 +292,7 @@ func renderMigration(v resourceView) (up, down string) {
 	default:
 		sql.WriteString(" and stored as TEXT in a STRICT table.\n")
 	}
-	fmt.Fprintf(&sql, "CREATE TABLE %s (\n%s\n)", table, strings.Join(lines, ",\n"))
+	fmt.Fprintf(&sql, "CREATE TABLE %s (\n%s\n)", q(table), strings.Join(lines, ",\n"))
 	switch {
 	case v.MySQL:
 		sql.WriteString(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
@@ -267,13 +301,13 @@ func renderMigration(v resourceView) (up, down string) {
 	}
 	sql.WriteString(";\n")
 	if v.Tenant && !v.MySQL {
-		fmt.Fprintf(&sql, "\nCREATE INDEX %s_tenant_id_idx ON %s (tenant_id, id);\n", table, table)
+		fmt.Fprintf(&sql, "\nCREATE INDEX %s ON %s (%s, %s);\n", indexName, q(table), q("tenant_id"), q("id"))
 	}
 	if v.Tenant && v.Postgres {
-		predicate := "tenant_id = NULLIF(current_setting('forge.tenant_id', true), '')::uuid"
+		predicate := q("tenant_id") + " = NULLIF(current_setting('forge.tenant_id', true), '')::uuid"
 		fmt.Fprintf(&sql, "\n-- Defense in depth: even a query that forgets its tenant_id predicate sees only\n-- the tenant set by InTenantTx. FORCE applies the policy to the table owner too.\n")
-		fmt.Fprintf(&sql, "ALTER TABLE %s ENABLE ROW LEVEL SECURITY;\nALTER TABLE %s FORCE ROW LEVEL SECURITY;\n\n", table, table)
-		fmt.Fprintf(&sql, "CREATE POLICY %s_tenant ON %s\n    USING (%s)\n    WITH CHECK (%s);\n", table, table, predicate, predicate)
+		fmt.Fprintf(&sql, "ALTER TABLE %s ENABLE ROW LEVEL SECURITY;\nALTER TABLE %s FORCE ROW LEVEL SECURITY;\n\n", q(table), q(table))
+		fmt.Fprintf(&sql, "CREATE POLICY %s ON %s\n    USING (%s)\n    WITH CHECK (%s);\n", q(table+"_tenant"), q(table), predicate, predicate)
 	}
 	if v.Identity {
 		fmt.Fprintf(&sql, "\n-- Permissions that guard the HTTP routes (the protect argument of Register%s).\n", v.PluralTitle)
@@ -286,7 +320,7 @@ func renderMigration(v resourceView) (up, down string) {
 		fmt.Fprintf(&rollback, "DELETE FROM forge_role_permissions WHERE permission IN ('%s:read', '%s:write');\n", table, table)
 		fmt.Fprintf(&rollback, "DELETE FROM forge_permissions WHERE name IN ('%s:read', '%s:write');\n", table, table)
 	}
-	fmt.Fprintf(&rollback, "DROP TABLE %s;\n", table)
+	fmt.Fprintf(&rollback, "DROP TABLE %s;\n", q(table))
 	down = rollback.String()
 	return up, down
 }

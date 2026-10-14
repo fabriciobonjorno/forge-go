@@ -43,6 +43,12 @@ func TestParseResourceArgs(t *testing.T) {
 			wantFields: []resourceField{{"name", "string", false}},
 		},
 		{
+			// Identifiers are quoted in all generated SQL, so SQL keywords are fine names.
+			name: "reserved SQL words", args: []string{"group", "order:int", "change:string", "--global"},
+			wantName: "group", wantPlural: "groups",
+			wantFields: []resourceField{{"order", "int", false}, {"change", "string", false}},
+		},
+		{
 			name: "every type", args: []string{"order_item", "a:string", "b:text?", "c:int", "d:bool?", "e:time", "f:uuid?", "--tenant-scoped"},
 			wantName: "order_item", wantPlural: "order_items", wantTenant: true,
 			wantFields: []resourceField{{"a", "string", false}, {"b", "text", true}, {"c", "int", false}, {"d", "bool", true}, {"e", "time", false}, {"f", "uuid", true}},
@@ -86,7 +92,6 @@ func TestParseResourceArgs(t *testing.T) {
 		{"os suffix", []string{"widget_linux", "name:string", "--global"}, "build constraint"},
 		{"plural equals name", []string{"sheep", "name:string", "--global", "--plural", "sheep"}, "must differ"},
 		{"plural not snake", []string{"person", "name:string", "--global", "--plural", "People"}, "snake_case"},
-		{"plural reserved word", []string{"group", "name:string", "--global"}, "reserved SQL word"},
 		{"plural forge prefix", []string{"thing", "name:string", "--global", "--plural", "forge_things"}, "reserved for Forge"},
 		{"missing type", []string{"product", "name", "--global"}, "name:type"},
 		{"unknown type", []string{"product", "name:varchar", "--global"}, "unsupported type"},
@@ -98,7 +103,6 @@ func TestParseResourceArgs(t *testing.T) {
 		{"reserved version", []string{"product", "version:int", "--global"}, "reserved"},
 		{"reserved created_at", []string{"product", "created_at:time", "--global"}, "reserved"},
 		{"reserved updated_at", []string{"product", "updated_at:time", "--global"}, "reserved"},
-		{"sql keyword field", []string{"product", "order:int", "--global"}, "reserved SQL word"},
 		{"duplicate field", []string{"product", "name:string", "name:text", "--global"}, "declared twice"},
 		{"go name collision", []string{"product", "i_d:int", "--global"}, "collides"},
 		{"clear flag collision", []string{"product", "note:text?", "clear_note:bool", "--global"}, "Clear"},
@@ -402,7 +406,7 @@ func TestResourcePermissionsAreOnlySeededWithForgeIdentity(t *testing.T) {
 	// Grants go before the permissions they reference, and both before the table.
 	grants := strings.Index(down, "DELETE FROM forge_role_permissions")
 	permissions := strings.Index(down, "DELETE FROM forge_permissions")
-	table := strings.Index(down, "DROP TABLE products")
+	table := strings.Index(down, `DROP TABLE "products"`)
 	if grants < 0 || permissions < grants || table < permissions {
 		t.Errorf("down migration order is wrong:\n%s", down)
 	}
@@ -450,14 +454,14 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 	forbidden := regexp.MustCompile(`(?i)\b(serial|bigserial|smallserial|auto_increment|autoincrement|gen_random_uuid|uuid_generate_v[0-9a-z]+|float|float4|float8|real|double|decimal|numeric|money)\b`)
 	mysqlUUIDFunction := regexp.MustCompile(`\bUUID\(\)`)
 	idColumn := map[string]*regexp.Regexp{
-		"postgres": regexp.MustCompile(`(?m)^\s+id\s+uuid PRIMARY KEY DEFAULT uuidv7\(\),?$`),
-		"mysql":    regexp.MustCompile(`(?m)^\s+id\s+CHAR\(36\) NOT NULL PRIMARY KEY,?$`),
-		"sqlite":   regexp.MustCompile(`(?m)^\s+id\s+TEXT NOT NULL PRIMARY KEY,?$`),
+		"postgres": regexp.MustCompile(`(?m)^\s+"id"\s+uuid PRIMARY KEY DEFAULT uuidv7\(\),?$`),
+		"mysql":    regexp.MustCompile("(?m)^\\s+`id`\\s+CHAR\\(36\\) NOT NULL PRIMARY KEY,?$"),
+		"sqlite":   regexp.MustCompile(`(?m)^\s+"id"\s+TEXT NOT NULL PRIMARY KEY,?$`),
 	}
 	tenantColumn := map[string]*regexp.Regexp{
-		"postgres": regexp.MustCompile(`(?m)^\s+tenant_id\s+uuid NOT NULL,?$`),
-		"mysql":    regexp.MustCompile(`(?m)^\s+tenant_id\s+CHAR\(36\) NOT NULL,?$`),
-		"sqlite":   regexp.MustCompile(`(?m)^\s+tenant_id\s+TEXT NOT NULL,?$`),
+		"postgres": regexp.MustCompile(`(?m)^\s+"tenant_id"\s+uuid NOT NULL,?$`),
+		"mysql":    regexp.MustCompile("(?m)^\\s+`tenant_id`\\s+CHAR\\(36\\) NOT NULL,?$"),
+		"sqlite":   regexp.MustCompile(`(?m)^\s+"tenant_id"\s+TEXT NOT NULL,?$`),
 	}
 	for _, database := range resourceDatabases {
 		for _, tenant := range []bool{true, false} {
@@ -547,19 +551,19 @@ func TestResourceTenantScopeShapesTheGeneratedCode(t *testing.T) {
 	for _, database := range []string{"postgres", "mysql", "sqlite"} {
 		scoped := persistence(render(database, true))
 		global := persistence(render(database, false))
-		if !strings.Contains(scoped, "tenancy.Require(ctx)") || !strings.Contains(scoped, "tenant_id = ") {
+		if !strings.Contains(scoped, "tenancy.Require(ctx)") || !strings.Contains(scoped, "tenant_id") || !strings.Contains(scoped, "tenantID") {
 			t.Errorf("%s tenant-scoped repository does not bind the tenant", database)
 		}
 		if strings.Contains(global, "tenancy") || strings.Contains(global, "tenant_id") {
 			t.Errorf("%s global repository mentions tenants", database)
 		}
 	}
-	if up := render("postgres", true).migrationUp; !strings.Contains(up, "FORCE ROW LEVEL SECURITY") || !strings.Contains(up, "CREATE POLICY products_tenant") ||
+	if up := render("postgres", true).migrationUp; !strings.Contains(up, "FORCE ROW LEVEL SECURITY") || !strings.Contains(up, `CREATE POLICY "products_tenant"`) ||
 		!strings.Contains(up, "WITH CHECK") || !strings.Contains(persistence(render("postgres", true)), "InTenantTx") {
 		t.Errorf("PostgreSQL tenant-scoped resources must enable forced RLS and run in InTenantTx:\n%s", up)
 	}
 	for _, database := range []string{"mysql", "sqlite"} {
-		if up := render(database, true).migrationUp; strings.Contains(up, "ROW LEVEL SECURITY") || !strings.Contains(up, "tenant_id, id") {
+		if up := render(database, true).migrationUp; strings.Contains(up, "ROW LEVEL SECURITY") || !strings.Contains(up, "tenant_id") || !strings.Contains(up, "_tenant_id_idx") {
 			t.Errorf("%s: want an (tenant_id, id) index and no RLS:\n%s", database, up)
 		}
 	}

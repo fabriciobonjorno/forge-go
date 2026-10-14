@@ -20,22 +20,22 @@ import (
 )
 
 const (
-	insert[[.Title]] = `[[.SQL.Insert.SQL]]`
+	insert[[.Title]] = [[.SQL.Insert.GoLiteral]]
 
-	select[[.Title]] = `[[.SQL.Select.SQL]]`
+	select[[.Title]] = [[.SQL.Select.GoLiteral]]
 
 	// UUIDv7 ids sort by creation time, so the primary key index serves
 	// newest-first keyset pagination directly.
-	list[[.PluralTitle]]FirstPage = `[[.SQL.ListFirst.SQL]]`
-	list[[.PluralTitle]]After     = `[[.SQL.ListAfter.SQL]]`
+	list[[.PluralTitle]]FirstPage = [[.SQL.ListFirst.GoLiteral]]
+	list[[.PluralTitle]]After     = [[.SQL.ListAfter.GoLiteral]]
 
 	// The version predicate is the optimistic lock: the row is written only
 	// if nobody else wrote it since the caller read it.
-	update[[.Title]] = `[[.SQL.Update.SQL]]`
+	update[[.Title]] = [[.SQL.Update.GoLiteral]]
 
-	delete[[.Title]] = `[[.SQL.Delete.SQL]]`
+	delete[[.Title]] = [[.SQL.Delete.GoLiteral]]
 
-	[[.Name]]Exists = `[[.SQL.Exists.SQL]]`
+	[[.Name]]Exists = [[.SQL.Exists.GoLiteral]]
 )
 
 // [[.Title]]Repository is the [[.Database]] application.[[.Title]]Repository. It runs on a pool or
