@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -181,6 +182,15 @@ func (m Mail) validate(environment Environment) error {
 				return errors.New("FORGE_MAIL_URL has an invalid port")
 			}
 		}
+		if environment == Production && m.AllowPlaintext && parsed.User != nil && !LoopbackHost(parsed.Hostname()) {
+			// SMTP AUTH PLAIN/LOGIN reveals the password to anyone who can
+			// strip STARTTLS from the exchange, unlike a database login
+			// that uses a challenge-response scheme. The sender refuses to
+			// authenticate in clear to a non-loopback host regardless, so
+			// this combination could only ever fail; reject it at start-up.
+			return errors.New("production cannot combine FORGE_MAIL_ALLOW_PLAINTEXT with SMTP credentials for a remote host: " +
+				"credentials are only sent over verified TLS")
+		}
 		if parsed.User != nil {
 			password, hasPassword := parsed.User.Password()
 			if parsed.User.Username() == "" || !hasPassword || password == "" {
@@ -206,4 +216,16 @@ func (m Mail) validate(environment Environment) error {
 // percent-encoded %0d%0a could smuggle into an SMTP dialogue.
 func hasControl(s string) bool {
 	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
+// LoopbackHost reports whether host is "localhost", a 127.0.0.0/8 address or
+// ::1: a destination the traffic never leaves the machine for. Host names
+// other than "localhost" are not resolved, so they are never loopback here.
+func LoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.Trim(host, "[]")), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

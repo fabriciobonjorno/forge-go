@@ -53,10 +53,12 @@ type SMTPConfig struct {
 	// RootCAs are the trusted roots; nil means the system pool.
 	RootCAs *x509.CertPool
 	// AllowPlaintext lets a send proceed when the server does not offer
-	// STARTTLS, including AUTH over that plaintext connection. Use it only on
-	// a trusted network or against a local development server. When the
-	// server does offer STARTTLS the upgrade is still attempted and verified;
-	// a failure never falls back to plaintext.
+	// STARTTLS. Use it only on a trusted network or against a local
+	// development server. It never allows credentials in clear: AUTH is sent
+	// without TLS only to a loopback host (see config.LoopbackHost); to any
+	// other host the send fails with ErrAuthFailed before the password
+	// leaves the process. When the server does offer STARTTLS the upgrade is
+	// still attempted and verified; a failure never falls back to plaintext.
 	AllowPlaintext bool
 	// Timeout bounds one whole send (connect, handshake, transfer) and is
 	// tightened by the context's deadline. It defaults to 30s.
@@ -232,7 +234,12 @@ func (s *SMTPSender) dial(ctx context.Context) (net.Conn, error) {
 }
 
 func (s *SMTPSender) authenticate(client *smtp.Client, secure bool) error {
-	if !secure && !s.cfg.AllowPlaintext {
+	// Credentials leave the machine only over verified TLS. AllowPlaintext
+	// relaxes that for the mail itself, never for the password: a network
+	// attacker who strips the STARTTLS advertisement would otherwise capture
+	// it. The one exception is a loopback server (a local relay, Mailpit).
+	clearAuthOK := s.cfg.AllowPlaintext && config.LoopbackHost(s.cfg.Host)
+	if !secure && !clearAuthOK {
 		return errAuthPlaintext
 	}
 	ok, params := client.Extension("AUTH")
@@ -243,9 +250,9 @@ func (s *SMTPSender) authenticate(client *smtp.Client, secure bool) error {
 	password := s.cfg.Password.Reveal()
 	switch {
 	case containsString(mechanisms, "PLAIN"):
-		return client.Auth(&tlsOnlyAuth{inner: plainAuth{username: s.cfg.Username, password: password}, allowPlaintext: s.cfg.AllowPlaintext})
+		return client.Auth(&tlsOnlyAuth{inner: plainAuth{username: s.cfg.Username, password: password}, allowPlaintext: clearAuthOK})
 	case containsString(mechanisms, "LOGIN"):
-		return client.Auth(&tlsOnlyAuth{inner: loginAuth{username: s.cfg.Username, password: password}, allowPlaintext: s.cfg.AllowPlaintext})
+		return client.Auth(&tlsOnlyAuth{inner: loginAuth{username: s.cfg.Username, password: password}, allowPlaintext: clearAuthOK})
 	default:
 		return errAuthUnsupported
 	}
