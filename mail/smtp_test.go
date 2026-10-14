@@ -431,6 +431,8 @@ func TestNewSMTPSenderValidation(t *testing.T) {
 		"negative port":      {Host: "h", Port: -1},
 		"password no user":   {Host: "h", Password: config.NewSecret("x")},
 		"username with crlf": {Host: "h", Username: "u\r\nQUIT", Password: config.NewSecret("x")},
+		"username with tab":  {Host: "h", Username: "u\tx", Password: config.NewSecret("x")},
+		"password with crlf": {Host: "h", Username: "u", Password: config.NewSecret("x\r\nQUIT")},
 		"bad hello":          {Host: "h", HelloName: "bad host!"},
 		"negative timeout":   {Host: "h", Timeout: -time.Second},
 		"huge timeout":       {Host: "h", Timeout: time.Hour},

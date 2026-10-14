@@ -94,13 +94,13 @@ func NewSMTPSender(cfg SMTPConfig) (*SMTPSender, error) {
 	if cfg.Username == "" && !cfg.Password.IsZero() {
 		return nil, errors.New("mail: SMTP password requires a username")
 	}
-	if strings.ContainsAny(cfg.Username, "\r\n\x00") {
-		return nil, errors.New("mail: SMTP username contains control characters")
+	if hasControl(cfg.Username) || hasControl(cfg.Password.Reveal()) {
+		return nil, errors.New("mail: SMTP credentials contain control characters")
 	}
 	if cfg.HelloName == "" {
 		cfg.HelloName = "localhost"
 	}
-	if !validDomain(cfg.HelloName) && net.ParseIP(strings.Trim(cfg.HelloName, "[]")) == nil {
+	if !config.ValidMailDomain(cfg.HelloName) && net.ParseIP(strings.Trim(cfg.HelloName, "[]")) == nil {
 		return nil, errors.New("mail: SMTP hello name is not a valid host name")
 	}
 	if cfg.Timeout == 0 {
@@ -382,4 +382,8 @@ func withFault(base *fault.Error, stage string, code int, cause error) error {
 		out.Metadata["smtp_code"] = strconv.Itoa(code)
 	}
 	return out
+}
+
+func hasControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
 }

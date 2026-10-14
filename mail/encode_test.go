@@ -620,7 +620,7 @@ func FuzzAddressAndHeaderValidation(f *testing.F) {
 		}
 		encoded, err := forgemail.Encode(msg)
 		if err != nil {
-			if !errors.Is(err, forgemail.ErrInvalid) {
+			if !errors.Is(err, forgemail.ErrInvalid) && !errors.Is(err, forgemail.ErrAddressUnsupported) {
 				t.Fatalf("unexpected error type: %v", err)
 			}
 			return

@@ -130,7 +130,7 @@ func Encode(msg Message, options ...EncodeOption) (Encoded, error) {
 	if len(msg.Cc) > 0 {
 		header("Cc", strings.Join(formatAddresses(msg.Cc), ", "))
 	}
-	header("Subject", encodeSubject(msg.Subject))
+	header("Subject", encodeText(msg.Subject))
 	header("Message-ID", messageID)
 	header("MIME-Version", "1.0")
 	names := make([]string, 0, len(msg.Headers))
@@ -308,11 +308,6 @@ func attachmentEntity(attachment Attachment, inline bool) entity {
 	body.WriteString(encoded)
 	body.WriteString("\r\n")
 	return entity{header: header, body: body.Bytes()}
-}
-
-// encodeSubject RFC 2047 encodes a subject that is not plain printable ASCII.
-func encodeSubject(subject string) string {
-	return mime.QEncoding.Encode("utf-8", subject)
 }
 
 // foldHeader renders "Name: value" with lines folded at spaces so none

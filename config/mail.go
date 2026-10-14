@@ -2,11 +2,11 @@ package config
 
 import (
 	"errors"
-	"net/mail"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // MailTransport identifies how FORGE_MAIL_URL's scheme delivers mail.
@@ -162,8 +162,10 @@ func (m Mail) validate(environment Environment) error {
 	if m.From == "" {
 		return errors.New("FORGE_MAIL_FROM is required when FORGE_MAIL_URL is set")
 	}
-	if address, err := mail.ParseAddress(m.From); err != nil || address.Address == "" {
-		return errors.New("FORGE_MAIL_FROM must be an email address such as \"App <app@example.com>\"")
+	// The same rules the mail package applies to every address, so a value
+	// that passes here cannot fail on every send later.
+	if _, _, err := ParseMailbox(m.From); err != nil {
+		return errors.New("FORGE_MAIL_FROM must be a plain ASCII email address such as \"App <app@example.com>\"")
 	}
 	switch transport {
 	case MailSTARTTLS, MailImplicitTLS:
@@ -184,6 +186,9 @@ func (m Mail) validate(environment Environment) error {
 			if parsed.User.Username() == "" || !hasPassword || password == "" {
 				return errors.New("FORGE_MAIL_URL credentials need both a user name and a password")
 			}
+			if hasControl(parsed.User.Username()) || hasControl(password) {
+				return errors.New("FORGE_MAIL_URL credentials contain control characters")
+			}
 		}
 	case MailFile:
 		if environment == Production {
@@ -195,4 +200,10 @@ func (m Mail) validate(environment Environment) error {
 		}
 	}
 	return nil
+}
+
+// hasControl reports whether s contains a control character, which a
+// percent-encoded %0d%0a could smuggle into an SMTP dialogue.
+func hasControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
 }
