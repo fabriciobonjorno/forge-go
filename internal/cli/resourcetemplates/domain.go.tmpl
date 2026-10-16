@@ -1,0 +1,285 @@
+package domain
+
+import (
+[[- if .UsesStrings]]
+	"strings"
+[[- end]]
+	"time"
+[[- if .HasText]]
+	"unicode"
+	"unicode/utf8"
+[[- end]]
+
+	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+[[if .HasString -]]
+// Max[[.Title]]StringLength is the longest string field, measured in characters
+// (Unicode code points) as every supported database counts them.
+const Max[[.Title]]StringLength = 255
+
+[[end -]]
+[[if .HasTextType -]]
+// Max[[.Title]]TextBytes is the longest text field. It is the size of a MySQL
+// TEXT column, so the same bound holds on every supported database.
+const Max[[.Title]]TextBytes = 65535
+
+[[end -]]
+// The [[.Title]] errors carry stable codes that are part of the API contract.
+// They are sentinels: compare them with errors.Is and never modify them. The
+// HTTP status follows from the category, so the domain stays
+// transport-agnostic.
+var (
+	ErrInvalid[[.Title]]ID = fault.New("invalid_[[.Name]]_id", "[[.Name]] id must be a UUIDv7", fault.CategoryInvalid, 0)
+[[- range .Fields]]
+	[[.Err]] = fault.New("invalid_[[$.Name]]_[[.Name]]", "[[.Message]]", fault.CategoryInvalid, 0)
+[[- end]]
+	ErrInvalid[[.Title]]Version = fault.New("invalid_version", "version must be a positive integer", fault.CategoryInvalid, 0)
+	ErrEmpty[[.Title]]Changes   = fault.New("empty_update", "an update must change at least one field", fault.CategoryInvalid, 0)
+	Err[[.Title]]NotFound       = fault.New("[[.Name]]_not_found", "[[.Name]] not found", fault.CategoryNotFound, 0)
+	ErrStale[[.Title]]Version   = fault.New("stale_version", "the [[.Name]] was changed by another request; reload it and retry", fault.CategoryConflict, 0)
+)
+
+// [[.Title]] is a stored [[.Name]].
+type [[.Title]] struct {
+	ID uuid.UUID
+[[- range .Fields]]
+	[[.Title]] [[.FieldType]]
+[[- end]]
+	// Version is the optimistic-locking token. The store advances it on every
+	// successful write; a write based on an older version is rejected.
+	Version   int
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// [[.Title]]Input is what a client supplies to create a [[.Name]].
+type [[.Title]]Input struct {
+[[- range .Fields]]
+	[[.Title]] [[.FieldType]]
+[[- end]]
+}
+
+// [[.Title]]Changes lists the fields an update changes. A nil pointer leaves
+// that field as it is; for an optional field, Clear<Field> sets it to NULL.
+type [[.Title]]Changes struct {
+[[- range .Fields]]
+	[[.Title]] *[[.GoType]]
+[[- if .Optional]]
+	Clear[[.Title]] bool
+[[- end]]
+[[- end]]
+}
+
+// IsEmpty reports whether no field would change.
+func (c [[.Title]]Changes) IsEmpty() bool {
+	return[[range $i, $f := .Fields]][[if $i]] &&[[end]] c.[[$f.Title]] == nil[[if $f.Optional]] && !c.Clear[[$f.Title]][[end]][[end]]
+}
+
+// New[[.Title]] validates input and creates a [[.Name]] at version 1. Times are
+// kept in UTC at microsecond precision, which every supported database stores
+// exactly.
+func New[[.Title]](id uuid.UUID, input [[.Title]]Input, now time.Time) ([[.Title]], error) {
+	if id.Version() != 7 || id.Variant() != 2 {
+		return [[.Title]]{}, ErrInvalid[[.Title]]ID
+	}
+	timestamp := now.UTC().Truncate(time.Microsecond)
+	entity := [[.Title]]{ID: id, Version: 1, CreatedAt: timestamp, UpdatedAt: timestamp}
+[[- if .HasValidated]]
+	var err error
+[[- end]]
+[[- range .Fields]]
+[[- if .Validated]]
+	if entity.[[.Title]], err = [[.Normalizer]](input.[[.Title]]); err != nil {
+		return [[$.Title]]{}, err
+	}
+[[- else]]
+	entity.[[.Title]] = input.[[.Title]]
+[[- end]]
+[[- end]]
+	return entity, nil
+}
+
+// Apply returns a copy of the [[.Name]] with changes applied and validated. The
+// version is left unchanged: it is the version the store must still hold for
+// the write to succeed, and the store advances it.
+func (p [[.Title]]) Apply(changes [[.Title]]Changes, now time.Time) ([[.Title]], error) {
+	if changes.IsEmpty() {
+		return [[.Title]]{}, ErrEmpty[[.Title]]Changes
+	}
+[[- if .HasValidated]]
+	var err error
+[[- end]]
+[[- range .Fields]]
+[[- if .Optional]]
+	if changes.Clear[[.Title]] && changes.[[.Title]] != nil {
+		return [[$.Title]]{}, [[.Err]]
+	}
+	if changes.Clear[[.Title]] {
+		p.[[.Title]] = nil
+	}
+	if changes.[[.Title]] != nil {
+[[- if .Validated]]
+		if p.[[.Title]], err = [[.Normalizer]](changes.[[.Title]]); err != nil {
+			return [[$.Title]]{}, err
+		}
+[[- else]]
+		p.[[.Title]] = new(*changes.[[.Title]])
+[[- end]]
+	}
+[[- else]]
+	if changes.[[.Title]] != nil {
+[[- if .Validated]]
+		if p.[[.Title]], err = [[.Normalizer]](*changes.[[.Title]]); err != nil {
+			return [[$.Title]]{}, err
+		}
+[[- else]]
+		p.[[.Title]] = *changes.[[.Title]]
+[[- end]]
+	}
+[[- end]]
+[[- end]]
+	p.UpdatedAt = now.UTC().Truncate(time.Microsecond)
+	return p, nil
+}
+
+// Parse[[.Title]]ID parses a [[.Name]] id. Ids are UUIDv7.
+func Parse[[.Title]]ID(value string) (uuid.UUID, error) {
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return uuid.UUID{}, ErrInvalid[[.Title]]ID
+	}
+	return id, nil
+}
+
+// Validate[[.Title]]Version rejects versions no [[.Name]] can have. Versions start at 1.
+func Validate[[.Title]]Version(version int) error {
+	if version < 1 {
+		return ErrInvalid[[.Title]]Version
+	}
+	return nil
+}
+[[- if .HasText]]
+
+// [[.Name]]TextValid reports whether value is valid UTF-8 without NUL or other
+// control characters. Multiline text may also contain tabs and line breaks.
+func [[.Name]]TextValid(value string, multiline bool) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if r == '\t' || r == '\n' || r == '\r' {
+			if !multiline {
+				return false
+			}
+			continue
+		}
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+[[- end]]
+[[- if .HasTime]]
+
+// [[.Name]]Time returns value in UTC at microsecond precision and reports
+// whether it is a plausible date (years 1000 to 9999, the range every
+// supported database stores).
+func [[.Name]]Time(value time.Time) (time.Time, bool) {
+	normalized := value.UTC().Truncate(time.Microsecond)
+	return normalized, normalized.Year() >= 1000 && normalized.Year() <= 9999
+}
+[[- end]]
+[[- range .Fields]]
+[[- if .IsString]]
+[[- if .Optional]]
+
+func [[.Normalizer]](value *string) (*string, error) {
+	if value == nil {
+		return value, nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if ![[$.Name]]TextValid(trimmed, false) || utf8.RuneCountInString(trimmed) > Max[[$.Title]]StringLength {
+		return nil, [[.Err]]
+	}
+	return &trimmed, nil
+}
+[[- else]]
+
+func [[.Normalizer]](value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || ![[$.Name]]TextValid(value, false) || utf8.RuneCountInString(value) > Max[[$.Title]]StringLength {
+		return "", [[.Err]]
+	}
+	return value, nil
+}
+[[- end]]
+[[- else if .IsText]]
+[[- if .Optional]]
+
+func [[.Normalizer]](value *string) (*string, error) {
+	if value == nil {
+		return value, nil
+	}
+	if ![[$.Name]]TextValid(*value, true) || len(*value) > Max[[$.Title]]TextBytes {
+		return nil, [[.Err]]
+	}
+	return new(*value), nil
+}
+[[- else]]
+
+func [[.Normalizer]](value string) (string, error) {
+	if strings.TrimSpace(value) == "" || ![[$.Name]]TextValid(value, true) || len(value) > Max[[$.Title]]TextBytes {
+		return "", [[.Err]]
+	}
+	return value, nil
+}
+[[- end]]
+[[- else if .IsTime]]
+[[- if .Optional]]
+
+func [[.Normalizer]](value *time.Time) (*time.Time, error) {
+	if value == nil {
+		return value, nil
+	}
+	normalized, ok := [[$.Name]]Time(*value)
+	if !ok {
+		return nil, [[.Err]]
+	}
+	return &normalized, nil
+}
+[[- else]]
+
+func [[.Normalizer]](value time.Time) (time.Time, error) {
+	normalized, ok := [[$.Name]]Time(value)
+	if !ok {
+		return time.Time{}, [[.Err]]
+	}
+	return normalized, nil
+}
+[[- end]]
+[[- else if .IsUUID]]
+[[- if .Optional]]
+
+func [[.Normalizer]](value *uuid.UUID) (*uuid.UUID, error) {
+	if value == nil {
+		return value, nil
+	}
+	if value.Version() != 7 || value.Variant() != 2 {
+		return nil, [[.Err]]
+	}
+	return new(*value), nil
+}
+[[- else]]
+
+func [[.Normalizer]](value uuid.UUID) (uuid.UUID, error) {
+	if value.Version() != 7 || value.Variant() != 2 {
+		return uuid.UUID{}, [[.Err]]
+	}
+	return value, nil
+}
+[[- end]]
+[[- end]]
+[[- end]]

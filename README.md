@@ -184,6 +184,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
 | `forge generate view NAME [--dry-run]` | Create or preview an embedded server-rendered Go HTML template with contextual escaping |
 | `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
+| `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
@@ -224,6 +225,48 @@ there explicitly. `NAME` must be lowercase snake_case with each segment
 starting with a letter. Scheduler failures are reported but are not retried
 automatically; jobs that run on multiple replicas must be idempotent or use a
 PostgreSQL advisory lock when only one replica may perform a schedule tick.
+
+`forge generate resource NAME field:type... (--tenant-scoped | --global)
+[--plural PLURAL] [--dry-run]` generates a working, tested CRUD resource for
+the application's database (read from `FORGE_DATABASE_URL`, as `forge inspect`
+does). `NAME` is singular snake_case; the table and routes use the plural
+(`category` becomes `categories`; pass `--plural` for irregular words).
+Exactly one scope flag is required. A field is `name:type` with `type` one of
+`string` (up to 255 characters), `text`, `int` (64-bit), `bool`, `time` (UTC)
+or `uuid`; a trailing `?` makes it optional (`NULL`). Quote optional fields in
+shells that expand `?`. There is no floating-point or decimal type: store money
+as an `int` in minor units.
+
+```sh
+forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run
+forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped
+forge migrate
+```
+
+It writes `db/migrations/<timestamp>_create_products.{up,down}.sql` and, for
+each of `app/domain`, `app/application`, `app/adapters/persistence` and
+`app/adapters/httpapi`, `product.go` with its `product_test.go`. Identifiers are
+UUIDv7 (`uuid` on PostgreSQL, `CHAR(36)` on MySQL and MariaDB, `TEXT` in a
+`STRICT` table on SQLite). Tenant-scoped resources read the tenant from the
+context, bind `tenant_id` in every statement and, on PostgreSQL, run behind
+forced row-level security; MySQL, MariaDB and SQLite rely on the statement
+predicates alone. Updates and deletes need the version the client read (`409`
+when stale), lists are newest-first keyset pages, and `PATCH` changes only the
+fields it names (`null` clears an optional one).
+
+The generator refuses to overwrite any file and never edits
+`app/bootstrap/bootstrap.go`: it prints the imports and wiring to add.
+`RegisterProducts` needs a `protect` function and asks it for `products:read` or
+`products:write` per route, so the endpoints are never public by accident. On
+PostgreSQL (Forge identity) the migration adds those permissions to
+`forge_permissions` and the wiring uses `auth.RequireAudited`; a global resource's
+write routes additionally stay behind a deny-all `protectPlatformWrite` you replace
+with operator-level authorization (tenant roles must not be able to change rows every
+tenant reads); on other databases the
+printed guard denies every request until you replace it with your own
+authentication and authorization. The generated integration tests need the test
+database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead
+of skipping when `FORGE_TEST_REQUIRE_DATABASE=true`.
 
 ### Development environment files
 

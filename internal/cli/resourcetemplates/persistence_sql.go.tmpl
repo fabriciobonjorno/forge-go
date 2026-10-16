@@ -1,0 +1,250 @@
+package persistence
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+[[- if .SQLite]]
+	"fmt"
+	"time"
+[[- end]]
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/fabriciobonjorno/forge-go/[[.Database]]"
+	"github.com/fabriciobonjorno/forge-go/sqldb"
+[[- if .Tenant]]
+	"github.com/fabriciobonjorno/forge-go/tenancy"
+[[- end]]
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+const (
+	insert[[.Title]] = [[.SQL.Insert.GoLiteral]]
+
+	select[[.Title]] = [[.SQL.Select.GoLiteral]]
+
+	// UUIDv7 ids sort by creation time, so the primary key index serves
+	// newest-first keyset pagination directly.
+	list[[.PluralTitle]]FirstPage = [[.SQL.ListFirst.GoLiteral]]
+	list[[.PluralTitle]]After     = [[.SQL.ListAfter.GoLiteral]]
+
+	// The version predicate is the optimistic lock: the row is written only
+	// if nobody else wrote it since the caller read it.
+	update[[.Title]] = [[.SQL.Update.GoLiteral]]
+
+	delete[[.Title]] = [[.SQL.Delete.GoLiteral]]
+
+	[[.Name]]Exists = [[.SQL.Exists.GoLiteral]]
+)
+
+// [[.Title]]Repository is the [[.Database]] application.[[.Title]]Repository. It runs on a pool or
+// inside a transaction, whichever sqldb.DBTX it is given.
+[[- if .Tenant]]
+//
+// It is tenant-scoped: every method takes the tenant from tenancy.Require(ctx)
+// and binds it in every predicate and insert. [[if .SQLite]]SQLite[[else]]MySQL and MariaDB[[end]] have no row-level
+// security, so this application-layer rule is the only isolation (ADR 0017):
+// keep it in every statement you add.
+[[- end]]
+type [[.Title]]Repository struct {
+	db sqldb.DBTX
+}
+
+var _ application.[[.Title]]Repository = (*[[.Title]]Repository)(nil)
+
+func New[[.Title]]Repository(db sqldb.DBTX) *[[.Title]]Repository {
+	return &[[.Title]]Repository{db: db}
+}
+
+func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	tenantID := tenant.ID
+[[- end]]
+	if _, err := r.db.ExecContext(ctx, insert[[.Title]], [[.SQL.Insert.ArgList]]); err != nil {
+		return domain.[[.Title]]{}, [[.Database]].Translate(err)
+	}
+	return entity, nil
+}
+
+func (r *[[.Title]]Repository) Get(ctx context.Context, id uuid.UUID) (domain.[[.Title]], error) {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	tenantID := tenant.ID
+[[- end]]
+	entity, err := scan[[.Title]](r.db.QueryRowContext(ctx, select[[.Title]], [[.SQL.Select.ArgList]]))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	}
+	if err != nil {
+		return domain.[[.Title]]{}, [[.Database]].Translate(err)
+	}
+	return entity, nil
+}
+
+func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error) {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tenantID := tenant.ID
+	var rows *sql.Rows
+[[- else]]
+	var rows *sql.Rows
+	var err error
+[[- end]]
+	if after == (uuid.UUID{}) {
+		rows, err = r.db.QueryContext(ctx, list[[.PluralTitle]]FirstPage, [[.SQL.ListFirst.ArgList]])
+	} else {
+		rows, err = r.db.QueryContext(ctx, list[[.PluralTitle]]After, [[.SQL.ListAfter.ArgList]])
+	}
+	if err != nil {
+		return nil, [[.Database]].Translate(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var entities []domain.[[.Title]]
+	for rows.Next() {
+		entity, err := scan[[.Title]](rows)
+		if err != nil {
+			return nil, [[.Database]].Translate(err)
+		}
+		entities = append(entities, entity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, [[.Database]].Translate(err)
+	}
+	return entities, nil
+}
+
+func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	tenantID := tenant.ID
+[[- end]]
+	result, err := r.db.ExecContext(ctx, update[[.Title]], [[.SQL.Update.ArgList]])
+	if err != nil {
+		return domain.[[.Title]]{}, [[.Database]].Translate(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.[[.Title]]{}, [[.Database]].Translate(err)
+	}
+	if affected != 1 {
+		return domain.[[.Title]]{}, r.explainMissedWrite(ctx, [[if .Tenant]]tenantID, [[end]]entity.ID)
+	}
+	// The guarded UPDATE advanced the version by exactly one.
+	entity.Version++
+	return entity, nil
+}
+
+func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version int) error {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return err
+	}
+	tenantID := tenant.ID
+[[- end]]
+	result, err := r.db.ExecContext(ctx, delete[[.Title]], [[.SQL.Delete.ArgList]])
+	if err != nil {
+		return [[.Database]].Translate(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return [[.Database]].Translate(err)
+	}
+	if affected != 1 {
+		return r.explainMissedWrite(ctx, [[if .Tenant]]tenantID, [[end]]id)
+	}
+	return nil
+}
+
+// explainMissedWrite tells a missing [[.Name]] from a version mismatch after a
+// guarded UPDATE or DELETE matched no row.
+func (r *[[.Title]]Repository) explainMissedWrite(ctx context.Context, [[if .Tenant]]tenantID uuid.UUID, [[end]]id uuid.UUID) error {
+	var exists bool
+	if err := r.db.QueryRowContext(ctx, [[.Name]]Exists, [[.SQL.Exists.ArgList]]).Scan(&exists); err != nil {
+		return [[.Database]].Translate(err)
+	}
+	if !exists {
+		return domain.Err[[.Title]]NotFound
+	}
+	return domain.ErrStale[[.Title]]Version
+}
+
+// [[.Name]]Scanner is satisfied by *sql.Row and *sql.Rows.
+type [[.Name]]Scanner interface {
+	Scan(dest ...any) error
+}
+[[- if .SQLite]]
+
+func scan[[.Title]](row [[.Name]]Scanner) (domain.[[.Title]], error) {
+	var entity domain.[[.Title]]
+	// STRICT tables store times as TEXT, which scans as string.
+	var createdAt, updatedAt string
+[[- range .Fields]]
+[[- if .IsTime]]
+	var raw[[.Title]] [[if .Optional]]sql.NullString[[else]]string[[end]]
+[[- end]]
+[[- end]]
+	if err := row.Scan(&entity.ID,
+[[- range .Fields]] [[if .IsTime]]&raw[[.Title]][[else]]&entity.[[.Title]][[end]],[[end]] &entity.Version, &createdAt, &updatedAt); err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	var err error
+	if entity.CreatedAt, err = parse[[.Title]]Time(createdAt); err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	if entity.UpdatedAt, err = parse[[.Title]]Time(updatedAt); err != nil {
+		return domain.[[.Title]]{}, err
+	}
+[[- range .Fields]]
+[[- if .IsTime]]
+[[- if .Optional]]
+	if raw[[.Title]].Valid {
+		value, err := parse[[$.Title]]Time(raw[[.Title]].String)
+		if err != nil {
+			return domain.[[$.Title]]{}, err
+		}
+		entity.[[.Title]] = &value
+	}
+[[- else]]
+	if entity.[[.Title]], err = parse[[$.Title]]Time(raw[[.Title]]); err != nil {
+		return domain.[[$.Title]]{}, err
+	}
+[[- end]]
+[[- end]]
+[[- end]]
+	return entity, nil
+}
+
+// parse[[.Title]]Time reads the UTC text SQLite stores for time.Time values.
+func parse[[.Title]]Time(value string) (time.Time, error) {
+	parsed, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse stored time: %w", err)
+	}
+	return parsed.UTC(), nil
+}
+[[- else]]
+
+func scan[[.Title]](row [[.Name]]Scanner) (domain.[[.Title]], error) {
+	var entity domain.[[.Title]]
+	// The MySQL driver is configured to return DATETIME values as UTC time.Time.
+	if err := row.Scan(&entity.ID,[[range .Fields]] &entity.[[.Title]],[[end]] &entity.Version, &entity.CreatedAt, &entity.UpdatedAt); err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	return entity, nil
+}
+[[- end]]

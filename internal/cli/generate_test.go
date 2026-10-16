@@ -348,3 +348,25 @@ func TestApplyGeneratedFilesRollsBackPartialCreate(t *testing.T) {
 		t.Fatalf("existing file changed: content=%q err=%v", content, err)
 	}
 }
+
+// A failed write removes the files and the directories this call created, and
+// leaves what was already there.
+func TestApplyGeneratedFilesRollsBackDirectories(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "kept", "existing.txt"), "mine")
+	before := snapshotTree(t, root)
+	err := applyGeneratedFiles(root, []string{"new/deep/dir", "kept"}, []generatedFile{
+		{path: filepath.Join("new", "deep", "dir", "one.txt"), content: "1"},
+		{path: filepath.Join("kept", "existing.txt"), content: "overwrite attempt"},
+	})
+	if err == nil {
+		t.Fatal("expected the collision to fail the write")
+	}
+	if after := snapshotTree(t, root); strings.Join(after, "|") != strings.Join(before, "|") {
+		t.Fatalf("rollback left debris:\nbefore %v\nafter  %v", before, after)
+	}
+	if body := readFile(t, filepath.Join(root, "kept", "existing.txt")); body != "mine" {
+		t.Fatalf("existing file changed: %q", body)
+	}
+}

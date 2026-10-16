@@ -29,7 +29,23 @@ Generators that support `--dry-run` show planned paths without writing files:
 forge generate migration create_orders --dry-run
 forge generate view orders --dry-run
 forge generate job cleanup --dry-run
+forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run
 ```
+
+For `forge generate resource`, always run `--dry-run` first and show the user
+the planned files and the wiring it prints. Choose the scope deliberately:
+`--tenant-scoped` for data that belongs to one tenant, `--global` only for data
+shared by all tenants; the command refuses to guess. Money is an `int` in
+minor units (`price_cents:int`); there are no floating-point or decimal types.
+Quote an optional field (`'summary:text?'`) so the shell does not expand the
+`?`. The generator never edits `app/bootstrap/bootstrap.go` and never opens
+routes to the public: the printed `protect` function must be wired (PostgreSQL
+applications use Forge identity; other databases need an application-written
+guard) before the endpoints answer anything but `403`. For a `--global` resource
+in a PostgreSQL application the write routes stay behind a separate deny-all
+`protectPlatformWrite`: tenant roles can grant themselves permissions, so
+writes to rows every tenant reads need operator-level authorization that only
+the application can implement.
 
 Review the proposed paths and content with the user before invoking a
 write-producing generator. `--dry-run` is a preview, not an authorization

@@ -181,30 +181,38 @@ func inspectMigrations(root *os.Root, report *projectInspection) {
 }
 
 func inspectEnvironment(root string, baseEnv []string, report *projectInspection) {
+	adapter, err := databaseAdapter(root, baseEnv)
+	report.Database = adapter
+	if err != nil {
+		addInspectDiagnostic(report, "environment_file.invalid", "Development environment files could not be loaded.", "Check .env.development and .env.local syntax; values are omitted from this report.")
+	}
+}
+
+// databaseAdapter reports which adapter FORGE_DATABASE_URL selects for the
+// application in root: postgres, mysql (MySQL and MariaDB), sqlite, none when
+// no URL is configured, or unknown. The URL itself is never returned.
+func databaseAdapter(root string, baseEnv []string) (string, error) {
 	env, err := environment(root, baseEnv)
 	if err != nil {
-		report.Database = "unknown"
-		addInspectDiagnostic(report, "environment_file.invalid", "Development environment files could not be loaded.", "Check .env.development and .env.local syntax; values are omitted from this report.")
-		return
+		return "unknown", err
 	}
 	value, configured := lookupIn(env)("FORGE_DATABASE_URL")
 	if !configured || value == "" {
-		report.Database = "none"
-		return
+		return "none", nil
 	}
 	scheme, _, ok := strings.Cut(value, ":")
 	if !ok {
-		return
+		return "unknown", nil
 	}
 	switch strings.ToLower(scheme) {
 	case "postgres", "postgresql":
-		report.Database = "postgres"
+		return "postgres", nil
 	case "mysql":
-		report.Database = "mysql"
+		return "mysql", nil
 	case "sqlite":
-		report.Database = "sqlite"
+		return "sqlite", nil
 	default:
-		report.Database = "unknown"
+		return "unknown", nil
 	}
 }
 

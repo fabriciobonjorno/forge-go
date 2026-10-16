@@ -8,6 +8,7 @@ package postgrestest
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/url"
@@ -36,6 +37,30 @@ func NewMigrated(t testing.TB, migrations fs.FS) *postgres.DB {
 	dbtest.Migrate(t, migrations, func(loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
 		return postgres.NewMigrator(cfg, loaded, logger)
 	})
+	return db
+}
+
+// NewMigratedSets is New followed by applying the migrations of several
+// independent sets as one globally ordered history, the way the application's
+// migrate command composes them (for example the Forge identity migrations
+// and the application's own).
+func NewMigratedSets(t testing.TB, sets ...fs.FS) *postgres.DB {
+	t.Helper()
+	db, cfg := NewWithConfig(t)
+	loaded, err := migrate.LoadMigrationSets(sets...)
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	migrator, err := postgres.NewMigrator(cfg, loaded, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("open migrator: %v", err)
+	}
+	defer func() { _ = migrator.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), dbtest.SetupTimeout)
+	defer cancel()
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
 	return db
 }
 

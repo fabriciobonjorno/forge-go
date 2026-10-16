@@ -1,0 +1,347 @@
+package application_test
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
+	"maps"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/fabriciobonjorno/forge-go/pagination"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+// [[.Name]]MemoryRepository is an in-memory [[.Title]]Repository with the same error
+// contract as the database adapters.
+type [[.Name]]MemoryRepository struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID]domain.[[.Title]]
+}
+
+var _ application.[[.Title]]Repository = (*[[.Name]]MemoryRepository)(nil)
+
+func new[[.Title]]MemoryRepository() *[[.Name]]MemoryRepository {
+	return &[[.Name]]MemoryRepository{rows: make(map[uuid.UUID]domain.[[.Title]])}
+}
+
+func (r *[[.Name]]MemoryRepository) Create(_ context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows[entity.ID] = entity
+	return entity, nil
+}
+
+func (r *[[.Name]]MemoryRepository) Get(_ context.Context, id uuid.UUID) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entity, ok := r.rows[id]
+	if !ok {
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	}
+	return entity, nil
+}
+
+func (r *[[.Name]]MemoryRepository) List(_ context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	newestFirst := slices.SortedFunc(maps.Values(r.rows), func(a, b domain.[[.Title]]) int { return cmp.Compare(0, a.ID.Compare(b.ID)) })
+	var page []domain.[[.Title]]
+	for _, entity := range newestFirst {
+		if after != (uuid.UUID{}) && entity.ID.Compare(after) >= 0 {
+			continue
+		}
+		if len(page) == limit {
+			break
+		}
+		page = append(page, entity)
+	}
+	return page, nil
+}
+
+func (r *[[.Name]]MemoryRepository) Update(_ context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, ok := r.rows[entity.ID]
+	switch {
+	case !ok:
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	case stored.Version != entity.Version:
+		return domain.[[.Title]]{}, domain.ErrStale[[.Title]]Version
+	}
+	entity.Version++
+	r.rows[entity.ID] = entity
+	return entity, nil
+}
+
+func (r *[[.Name]]MemoryRepository) Delete(_ context.Context, id uuid.UUID, version int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, ok := r.rows[id]
+	switch {
+	case !ok:
+		return domain.Err[[.Title]]NotFound
+	case stored.Version != version:
+		return domain.ErrStale[[.Title]]Version
+	}
+	delete(r.rows, id)
+	return nil
+}
+
+// bump simulates another request changing the [[.Name]] behind the service's back.
+func (r *[[.Name]]MemoryRepository) bump(id uuid.UUID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entity := r.rows[id]
+	entity.Version++
+	r.rows[id] = entity
+}
+
+var [[.Name]]ClockStart = time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+
+// [[.Name]]Fixture is a service over an in-memory store with a clock that advances
+// one second per reading, so every timestamp in a test is distinct and known.
+type [[.Name]]Fixture struct {
+	service *application.[[.Title]]Service
+	repo    *[[.Name]]MemoryRepository
+}
+
+func new[[.Title]]Fixture(t *testing.T) [[.Name]]Fixture {
+	t.Helper()
+	repo := new[[.Title]]MemoryRepository()
+	ticks := 0
+	clock := func() time.Time {
+		ticks++
+		return [[.Name]]ClockStart.Add(time.Duration(ticks) * time.Second)
+	}
+	service, err := application.New[[.Title]]Service(repo, clock, uuid.New)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return [[.Name]]Fixture{service: service, repo: repo}
+}
+
+func (f [[.Name]]Fixture) create(t *testing.T, n int) domain.[[.Title]] {
+	t.Helper()
+	entity, err := f.service.Create(context.Background(), domain.[[.Title]]Input{
+		[[.SampleInput 1 true]]
+	})
+	if err != nil {
+		t.Fatalf("create #%d: %v", n, err)
+	}
+	return entity
+}
+
+func [[.Name]]JSON(t *testing.T, entity domain.[[.Title]]) string {
+	t.Helper()
+	encoded, err := json.Marshal(entity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func Test[[.Title]]ServiceRequiresDependencies(t *testing.T) {
+	t.Parallel()
+	repo := new[[.Title]]MemoryRepository()
+	if _, err := application.New[[.Title]]Service(nil, time.Now, uuid.New); err == nil {
+		t.Error("nil repository accepted")
+	}
+	if _, err := application.New[[.Title]]Service(repo, nil, uuid.New); err == nil {
+		t.Error("nil clock accepted")
+	}
+	if _, err := application.New[[.Title]]Service(repo, time.Now, nil); err == nil {
+		t.Error("nil id source accepted")
+	}
+}
+
+func Test[[.Title]]ServiceCreate(t *testing.T) {
+	t.Parallel()
+	f := new[[.Title]]Fixture(t)
+	entity := f.create(t, 1)
+	if entity.Version != 1 || !entity.CreatedAt.Equal([[.Name]]ClockStart.Add(time.Second)) || !entity.UpdatedAt.Equal(entity.CreatedAt) {
+		t.Fatalf("entity = %s", [[.Name]]JSON(t, entity))
+	}
+	if entity.ID.Version() != 7 {
+		t.Fatalf("id %v is not a UUIDv7", entity.ID)
+	}
+	stored, err := f.service.Get(context.Background(), entity.ID)
+	if err != nil || [[.Name]]JSON(t, stored) != [[.Name]]JSON(t, entity) {
+		t.Fatalf("stored = %v, %v", stored, err)
+	}
+}
+
+func Test[[.Title]]ServiceCreateRejectsInvalidInputAndStoresNothing(t *testing.T) {
+	t.Parallel()
+	f := new[[.Title]]Fixture(t)
+[[- if .FirstSimpleInvalid]]
+[[- with .FirstSimpleInvalid]]
+	input := domain.[[$.Title]]Input{
+		[[$.SampleInput 1 true]]
+	}
+	input.[[.Field.Title]] = [[.Field.Literal .Expr]]
+	if _, err := f.service.Create(context.Background(), input); !errors.Is(err, domain.[[.Field.Err]]) {
+		t.Fatalf("err = %v, want [[.Field.Err]]", err)
+	}
+[[- end]]
+[[- else]]
+	// Only int and bool fields: nothing the domain can reject except the id.
+[[- end]]
+	page, err := f.service.List(context.Background(), pagination.Request{})
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("page = %+v, err = %v; want nothing stored", page, err)
+	}
+}
+
+func Test[[.Title]]ServiceCreateReportsIDFailure(t *testing.T) {
+	t.Parallel()
+	failure := errors.New("entropy exhausted")
+	service, err := application.New[[.Title]]Service(new[[.Title]]MemoryRepository(), time.Now, func() (uuid.UUID, error) { return uuid.UUID{}, failure })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), domain.[[.Title]]Input{}); !errors.Is(err, failure) {
+		t.Fatalf("err = %v, want the id source failure", err)
+	}
+}
+
+func Test[[.Title]]ServiceGetMissing(t *testing.T) {
+	t.Parallel()
+	f := new[[.Title]]Fixture(t)
+	if _, err := f.service.Get(context.Background(), uuid.MustNew()); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Fatalf("err = %v, want Err[[.Title]]NotFound", err)
+	}
+}
+
+func Test[[.Title]]ServiceListPagesNewestFirst(t *testing.T) {
+	t.Parallel()
+	f := new[[.Title]]Fixture(t)
+	const total = 5
+	created := make([]domain.[[.Title]], 0, total)
+	for i := range total {
+		created = append(created, f.create(t, i))
+	}
+
+	var seen []uuid.UUID
+	request := pagination.Request{Limit: 2}
+	pages := 0
+	for {
+		pages++
+		page, err := f.service.List(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entity := range page.Items {
+			seen = append(seen, entity.ID)
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if request.After, err = pagination.DecodeCursor(page.NextCursor); err != nil {
+			t.Fatal(err)
+		}
+		if pages > total {
+			t.Fatal("pagination does not terminate")
+		}
+	}
+	if pages != 3 || len(seen) != total {
+		t.Fatalf("walked %d pages and %d rows, want 3 and %d", pages, len(seen), total)
+	}
+	for i, id := range seen {
+		if want := created[total-1-i].ID; id != want {
+			t.Fatalf("position %d: got %v, want %v (newest first)", i, id, want)
+		}
+	}
+
+	// A zero limit means the default; an oversized limit is capped.
+	for _, limit := range []int{0, 1 << 20} {
+		page, err := f.service.List(context.Background(), pagination.Request{Limit: limit})
+		if err != nil || len(page.Items) != total || page.NextCursor != "" {
+			t.Fatalf("limit %d: %d items, cursor %q, err %v", limit, len(page.Items), page.NextCursor, err)
+		}
+	}
+}
+
+func Test[[.Title]]ServiceUpdate(t *testing.T) {
+	t.Parallel()
+	f := new[[.Title]]Fixture(t)
+	entity := f.create(t, 1)
+	ctx := context.Background()
+
+	updated, err := f.service.Update(ctx, entity.ID, entity.Version, domain.[[.Title]]Changes{
+		[[.SampleChanges 2]]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Version != 2 || !updated.CreatedAt.Equal(entity.CreatedAt) || !updated.UpdatedAt.After(entity.UpdatedAt) {
+		t.Fatalf("updated = %s", [[.Name]]JSON(t, updated))
+	}
+	stored, err := f.service.Get(ctx, entity.ID)
+	if err != nil || [[.Name]]JSON(t, stored) != [[.Name]]JSON(t, updated) {
+		t.Fatalf("stored = %v, %v; want the updated [[.Name]]", stored, err)
+	}
+
+	// Replaying the first request is rejected as stale and changes nothing.
+	f.repo.bump(entity.ID)
+	_, err = f.service.Update(ctx, entity.ID, 2, domain.[[.Title]]Changes{
+		[[.SampleChanges 3]]
+	})
+	if !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Fatalf("stale update: err = %v, want ErrStale[[.Title]]Version", err)
+	}
+}
+
+func Test[[.Title]]ServiceUpdateErrors(t *testing.T) {
+	t.Parallel()
+	f := new[[.Title]]Fixture(t)
+	entity := f.create(t, 1)
+	ctx := context.Background()
+	changes := domain.[[.Title]]Changes{
+		[[.SampleChanges 2]]
+	}
+	if _, err := f.service.Update(ctx, uuid.MustNew(), 1, changes); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Errorf("missing: err = %v, want Err[[.Title]]NotFound", err)
+	}
+	if _, err := f.service.Update(ctx, entity.ID, 0, changes); !errors.Is(err, domain.ErrInvalid[[.Title]]Version) {
+		t.Errorf("version 0: err = %v, want ErrInvalid[[.Title]]Version", err)
+	}
+	if _, err := f.service.Update(ctx, entity.ID, entity.Version, domain.[[.Title]]Changes{}); !errors.Is(err, domain.ErrEmpty[[.Title]]Changes) {
+		t.Errorf("empty changes: err = %v, want ErrEmpty[[.Title]]Changes", err)
+	}
+	stored, err := f.service.Get(ctx, entity.ID)
+	if err != nil || [[.Name]]JSON(t, stored) != [[.Name]]JSON(t, entity) {
+		t.Fatalf("a rejected update modified the [[.Name]]: %v, %v", stored, err)
+	}
+}
+
+func Test[[.Title]]ServiceDelete(t *testing.T) {
+	t.Parallel()
+	f := new[[.Title]]Fixture(t)
+	entity := f.create(t, 1)
+	ctx := context.Background()
+
+	if err := f.service.Delete(ctx, entity.ID, 0); !errors.Is(err, domain.ErrInvalid[[.Title]]Version) {
+		t.Errorf("version 0: err = %v, want ErrInvalid[[.Title]]Version", err)
+	}
+	if err := f.service.Delete(ctx, entity.ID, entity.Version+1); !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Errorf("stale: err = %v, want ErrStale[[.Title]]Version", err)
+	}
+	if _, err := f.service.Get(ctx, entity.ID); err != nil {
+		t.Fatalf("a stale delete removed the [[.Name]]: %v", err)
+	}
+	if err := f.service.Delete(ctx, entity.ID, entity.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.Get(ctx, entity.ID); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Fatalf("after delete: err = %v, want Err[[.Title]]NotFound", err)
+	}
+	if err := f.service.Delete(ctx, entity.ID, entity.Version); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Errorf("second delete: err = %v, want Err[[.Title]]NotFound", err)
+	}
+}

@@ -1,0 +1,656 @@
+package httpapi_test
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	forge "github.com/fabriciobonjorno/forge-go"
+	"[[.Module]]/app/adapters/httpapi"
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/fabriciobonjorno/forge-go/pagination"
+	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/fabriciobonjorno/forge-go/web"
+)
+
+// [[.Name]]MemoryRepository keeps the handler tests independent of any database.
+type [[.Name]]MemoryRepository struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID]domain.[[.Title]]
+}
+
+var _ application.[[.Title]]Repository = (*[[.Name]]MemoryRepository)(nil)
+
+func (r *[[.Name]]MemoryRepository) Create(_ context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows[entity.ID] = entity
+	return entity, nil
+}
+
+func (r *[[.Name]]MemoryRepository) Get(_ context.Context, id uuid.UUID) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entity, ok := r.rows[id]
+	if !ok {
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	}
+	return entity, nil
+}
+
+func (r *[[.Name]]MemoryRepository) List(_ context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	newestFirst := slices.SortedFunc(maps.Values(r.rows), func(a, b domain.[[.Title]]) int { return cmp.Compare(0, a.ID.Compare(b.ID)) })
+	var page []domain.[[.Title]]
+	for _, entity := range newestFirst {
+		if after != (uuid.UUID{}) && entity.ID.Compare(after) >= 0 {
+			continue
+		}
+		if len(page) == limit {
+			break
+		}
+		page = append(page, entity)
+	}
+	return page, nil
+}
+
+func (r *[[.Name]]MemoryRepository) Update(_ context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, ok := r.rows[entity.ID]
+	switch {
+	case !ok:
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	case stored.Version != entity.Version:
+		return domain.[[.Title]]{}, domain.ErrStale[[.Title]]Version
+	}
+	entity.Version++
+	r.rows[entity.ID] = entity
+	return entity, nil
+}
+
+func (r *[[.Name]]MemoryRepository) Delete(_ context.Context, id uuid.UUID, version int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, ok := r.rows[id]
+	switch {
+	case !ok:
+		return domain.Err[[.Title]]NotFound
+	case stored.Version != version:
+		return domain.ErrStale[[.Title]]Version
+	}
+	delete(r.rows, id)
+	return nil
+}
+
+// [[.Name]]AllowAll stands in for the application's guard: it lets every request
+// through. It exists only in tests.
+func [[.Name]]AllowAll(_ string, next http.Handler) (http.Handler, error) { return next, nil }
+
+// [[.Name]]Grant returns a guard that lets through only the named permissions.
+func [[.Name]]Grant(granted ...string) httpapi.[[.Title]]Protect {
+	return func(permission string, next http.Handler) (http.Handler, error) {
+		if slices.Contains(granted, permission) {
+			return next, nil
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
+		}), nil
+	}
+}
+
+// new[[.Title]]Service builds the use cases over an in-memory store with a clock
+// that advances one second per reading.
+func new[[.Title]]Service(t *testing.T) *application.[[.Title]]Service {
+	t.Helper()
+	repo := &[[.Name]]MemoryRepository{rows: make(map[uuid.UUID]domain.[[.Title]])}
+	var mu sync.Mutex
+	ticks := 0
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		ticks++
+		return time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC).Add(time.Duration(ticks) * time.Second)
+	}
+	service, err := application.New[[.Title]]Service(repo, clock, uuid.New)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+// new[[.Title]]Handler serves the API from a forge.App, so requests pass through
+// the framework's middleware (request IDs, body limit, error format).
+func new[[.Title]]HandlerFor(t *testing.T, service *application.[[.Title]]Service, protect httpapi.[[.Title]]Protect) http.Handler {
+	t.Helper()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := httpapi.Register[[.PluralTitle]](app, service, protect); err != nil {
+		t.Fatal(err)
+	}
+	return app.Handler()
+}
+
+func new[[.Title]]Handler(t *testing.T) http.Handler {
+	t.Helper()
+	return new[[.Title]]HandlerFor(t, new[[.Title]]Service(t), [[.Name]]AllowAll)
+}
+
+// [[.Name]]Body is a JSON request body.
+type [[.Name]]Body = map[string]any
+
+// [[.Name]]Send issues a request with a JSON content type when it has a body.
+func [[.Name]]Send(t *testing.T, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return [[.Name]]SendAs(t, handler, method, target, "", body)
+}
+
+// [[.Name]]SendAs is Send with an explicit content type. body is raw text, a
+// value to encode as JSON, or nil.
+func [[.Name]]SendAs(t *testing.T, handler http.Handler, method, target, contentType string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var payload string
+	switch body := body.(type) {
+	case nil:
+	case string:
+		payload = body
+	default:
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload = string(encoded)
+	}
+	request := httptest.NewRequest(method, target, strings.NewReader(payload))
+	switch {
+	case contentType != "":
+		request.Header.Set("Content-Type", contentType)
+	case payload != "":
+		request.Header.Set("Content-Type", "application/json")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func [[.Name]]Expect(t *testing.T, recorder *httptest.ResponseRecorder, status int) {
+	t.Helper()
+	if recorder.Code != status {
+		t.Fatalf("status %d, want %d; body %s", recorder.Code, status, recorder.Body)
+	}
+}
+
+func [[.Name]]Decode(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type %q, body %s", got, recorder.Body)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &value); err != nil {
+		t.Fatalf("decode %s: %v", recorder.Body, err)
+	}
+	return value
+}
+
+// [[.Name]]RoundTrip encodes and decodes body, so values compare the way the
+// client sees them.
+func [[.Name]]RoundTrip(t *testing.T, body [[.Name]]Body) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+// [[.Name]]AssertFields checks that every member of want appears in got unchanged.
+func [[.Name]]AssertFields(t *testing.T, got map[string]any, want [[.Name]]Body) {
+	t.Helper()
+	for key, value := range [[.Name]]RoundTrip(t, want) {
+		if !reflect.DeepEqual(got[key], value) {
+			t.Errorf("%s = %v, want %v", key, got[key], value)
+		}
+	}
+}
+
+func [[.Name]]Version(t *testing.T, entity map[string]any) int {
+	t.Helper()
+	version, ok := entity["version"].(float64)
+	if !ok {
+		t.Fatalf("version missing in %v", entity)
+	}
+	return int(version)
+}
+
+func Test[[.Title]]Lifecycle(t *testing.T) {
+	t.Parallel()
+	handler := new[[.Title]]Handler(t)
+
+	request := [[.Name]]Body{
+		[[.SampleBody 1 true]]
+	}
+	recorder := [[.Name]]Send(t, handler, http.MethodPost, "/v1/[[.Plural]]", request)
+	[[.Name]]Expect(t, recorder, http.StatusCreated)
+	created := [[.Name]]Decode(t, recorder)
+	id, _ := created["id"].(string)
+	if parsed, err := uuid.Parse(id); err != nil || parsed.Version() != 7 {
+		t.Fatalf("id %q is not a UUIDv7: %v", id, err)
+	}
+	[[.Name]]AssertFields(t, created, request)
+	if [[.Name]]Version(t, created) != 1 || created["created_at"] == nil || created["created_at"] != created["updated_at"] {
+		t.Fatalf("created = %v", created)
+	}
+	location := recorder.Header().Get("Location")
+	if location != "/v1/[[.Plural]]/"+id {
+		t.Fatalf("Location = %q", location)
+	}
+
+	recorder = [[.Name]]Send(t, handler, http.MethodGet, location, nil)
+	[[.Name]]Expect(t, recorder, http.StatusOK)
+	if got := [[.Name]]Decode(t, recorder); !reflect.DeepEqual(got, created) {
+		t.Fatalf("got = %v, want %v", got, created)
+	}
+
+	// PATCH changes only the members it names.
+	patch := [[.Name]]Body{
+		"version": 1,
+[[- with index .Fields 0]]
+		"[[.Name]]": [[.SampleExpr 2]],
+[[- end]]
+	}
+	recorder = [[.Name]]Send(t, handler, http.MethodPatch, location, patch)
+	[[.Name]]Expect(t, recorder, http.StatusOK)
+	patched := [[.Name]]Decode(t, recorder)
+	want := maps.Clone(created)
+	maps.Copy(want, [[.Name]]RoundTrip(t, patch))
+	want["version"] = float64(2)
+	for key, value := range want {
+		if key != "updated_at" && !reflect.DeepEqual(patched[key], value) {
+			t.Errorf("patched %s = %v, want %v", key, patched[key], value)
+		}
+	}
+	if patched["updated_at"] == created["updated_at"] {
+		t.Errorf("updated_at did not move: %v", patched["updated_at"])
+	}
+[[- if .HasOptional]]
+
+	// null clears an optional field.
+	nulls := [[.Name]]Body{
+		"version": 2,
+[[- range .OptionalFields]]
+		"[[.Name]]": nil,
+[[- end]]
+	}
+	recorder = [[.Name]]Send(t, handler, http.MethodPatch, location, nulls)
+	[[.Name]]Expect(t, recorder, http.StatusOK)
+	current := [[.Name]]Decode(t, recorder)
+[[- range .OptionalFields]]
+	if value, present := current["[[.Name]]"]; !present || value != nil {
+		t.Errorf("[[.Name]] = %v after null, want null", value)
+	}
+[[- end]]
+	if [[.Name]]Version(t, current) != 3 {
+		t.Errorf("version = %d after the second update, want 3", [[.Name]]Version(t, current))
+	}
+[[- else]]
+	current := patched
+[[- end]]
+[[- with .FirstRequired]]
+
+	// null is not a value for a required field.
+	recorder = [[$.Name]]Send(t, handler, http.MethodPatch, location, [[$.Name]]Body{"version": [[$.Name]]Version(t, current), "[[.Name]]": nil})
+	[[$.Name]]Expect(t, recorder, http.StatusBadRequest)
+	if code := [[$.Name]]Decode(t, recorder)["error"].(map[string]any)["code"]; code != "invalid_[[$.Name]]_[[.Name]]" {
+		t.Errorf("code = %v", code)
+	}
+[[- end]]
+
+	// Replaying the first version is rejected as stale.
+	recorder = [[.Name]]Send(t, handler, http.MethodPatch, location, [[.Name]]Body{
+		"version": 1,
+[[- with index .Fields 0]]
+		"[[.Name]]": [[.SampleExpr 3]],
+[[- end]]
+	})
+	[[.Name]]Expect(t, recorder, http.StatusConflict)
+	if body := [[.Name]]Decode(t, recorder); body["error"].(map[string]any)["code"] != "stale_version" {
+		t.Fatalf("error = %v", body)
+	}
+
+	version := strconv.Itoa([[.Name]]Version(t, current))
+	recorder = [[.Name]]Send(t, handler, http.MethodDelete, location+"?version=1", nil)
+	[[.Name]]Expect(t, recorder, http.StatusConflict)
+	recorder = [[.Name]]Send(t, handler, http.MethodDelete, location+"?version="+version, nil)
+	[[.Name]]Expect(t, recorder, http.StatusNoContent)
+	if recorder.Body.Len() != 0 {
+		t.Errorf("204 response has a body: %s", recorder.Body)
+	}
+	recorder = [[.Name]]Send(t, handler, http.MethodGet, location, nil)
+	[[.Name]]Expect(t, recorder, http.StatusNotFound)
+}
+[[- if .OptionalFields]]
+
+func Test[[.Title]]CreateWithoutOptionalFieldsReturnsNull(t *testing.T) {
+	t.Parallel()
+	handler := new[[.Title]]Handler(t)
+	request := [[.Name]]Body{
+		[[.SampleBody 2 false]]
+	}
+	recorder := [[.Name]]Send(t, handler, http.MethodPost, "/v1/[[.Plural]]", request)
+	[[.Name]]Expect(t, recorder, http.StatusCreated)
+	created := [[.Name]]Decode(t, recorder)
+	[[.Name]]AssertFields(t, created, request)
+[[- range .OptionalFields]]
+	if value, present := created["[[.Name]]"]; !present || value != nil {
+		t.Errorf("[[.Name]] = %v, want null", value)
+	}
+[[- end]]
+}
+[[- end]]
+
+func Test[[.Title]]ListPagination(t *testing.T) {
+	t.Parallel()
+	handler := new[[.Title]]Handler(t)
+	const total = 5
+	var created []string
+	for range total {
+		recorder := [[.Name]]Send(t, handler, http.MethodPost, "/v1/[[.Plural]]", [[.Name]]Body{
+			[[.SampleBody 1 true]]
+		})
+		[[.Name]]Expect(t, recorder, http.StatusCreated)
+		created = append(created, [[.Name]]Decode(t, recorder)["id"].(string))
+	}
+
+	var seen []string
+	target := "/v1/[[.Plural]]?limit=2"
+	for pages := 1; ; pages++ {
+		recorder := [[.Name]]Send(t, handler, http.MethodGet, target, nil)
+		[[.Name]]Expect(t, recorder, http.StatusOK)
+		var page pagination.Page[map[string]any]
+		if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range page.Items {
+			seen = append(seen, item["id"].(string))
+		}
+		if page.NextCursor == "" {
+			if pages != 3 {
+				t.Fatalf("walked %d pages, want 3", pages)
+			}
+			break
+		}
+		target = "/v1/[[.Plural]]?limit=2&cursor=" + page.NextCursor
+	}
+	if len(seen) != total {
+		t.Fatalf("saw %d rows, want %d", len(seen), total)
+	}
+	for i, id := range seen {
+		if want := created[total-1-i]; id != want {
+			t.Fatalf("position %d: got %s, want %s (newest first)", i, id, want)
+		}
+	}
+
+	// Without parameters the default limit covers everything.
+	recorder := [[.Name]]Send(t, handler, http.MethodGet, "/v1/[[.Plural]]", nil)
+	[[.Name]]Expect(t, recorder, http.StatusOK)
+	var page pagination.Page[map[string]any]
+	if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil || len(page.Items) != total || page.NextCursor != "" {
+		t.Fatalf("default page: %d items, cursor %q, err %v", len(page.Items), page.NextCursor, err)
+	}
+}
+
+func Test[[.Title]]ListEmptyReturnsEmptyArray(t *testing.T) {
+	t.Parallel()
+	recorder := [[.Name]]Send(t, new[[.Title]]Handler(t), http.MethodGet, "/v1/[[.Plural]]", nil)
+	[[.Name]]Expect(t, recorder, http.StatusOK)
+	if body := strings.TrimSpace(recorder.Body.String()); body != `{"items":[]}` {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func Test[[.Title]]Errors(t *testing.T) {
+	t.Parallel()
+	service := new[[.Title]]Service(t)
+	handler := new[[.Title]]HandlerFor(t, service, [[.Name]]AllowAll)
+	existing, err := service.Create(context.Background(), domain.[[.Title]]Input{
+		[[.SampleInput 1 true]]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/[[.Plural]]/" + existing.ID.String()
+	missing := "/v1/[[.Plural]]/" + uuid.MustNew().String()
+	const uuidV4 = "550e8400-e29b-41d4-a716-446655440000"
+[[- if .BadValues]]
+	createBody := func() [[.Name]]Body {
+		return [[.Name]]Body{
+			[[.SampleBody 1 true]]
+		}
+	}
+	withMember := func(body [[.Name]]Body, key string, value any) [[.Name]]Body {
+		body[key] = value
+		return body
+	}
+[[- end]]
+	// withVersion is an update body that changes the first field; version 0
+	// leaves the member out.
+	withVersion := func(version int) [[.Name]]Body {
+		body := [[.Name]]Body{
+[[- with index .Fields 0]]
+			"[[.Name]]": [[.SampleExpr 2]],
+[[- end]]
+		}
+		if version > 0 {
+			body["version"] = version
+		}
+		return body
+	}
+
+	tests := []struct {
+		name        string
+		method      string
+		target      string
+		contentType string
+		body        any
+		status      int
+		code        string
+	}{
+[[- with .FirstRequired]]
+		{name: "missing required field", method: http.MethodPost, target: "/v1/[[$.Plural]]", body: `{}`, status: 400, code: "invalid_[[$.Name]]_[[.Name]]"},
+		{name: "null required field", method: http.MethodPost, target: "/v1/[[$.Plural]]", body: `{"[[.Name]]":null}`, status: 400, code: "invalid_[[$.Name]]_[[.Name]]"},
+[[- end]]
+		{name: "unknown field", method: http.MethodPost, target: "/v1/[[.Plural]]", body: `{"unknown":true}`, status: 400, code: "invalid_json"},
+		{name: "malformed JSON", method: http.MethodPost, target: "/v1/[[.Plural]]", body: `{"`, status: 400, code: "invalid_json"},
+		{name: "wrong content type", method: http.MethodPost, target: "/v1/[[.Plural]]", contentType: "text/plain", body: `{}`, status: 415, code: "unsupported_media_type"},
+[[- with .WrongType]]
+		{name: "wrong JSON type on create", method: http.MethodPost, target: "/v1/[[$.Plural]]", body: `{"[[.Field.Name]]":[[.Literal]]}`, status: 400, code: "invalid_json"},
+		{name: "wrong JSON type on update", method: http.MethodPatch, target: path, body: `{"version":1,"[[.Field.Name]]":[[.Literal]]}`, status: 400, code: "invalid_json"},
+[[- end]]
+[[- range $i, $bad := .BadValues]]
+		{name: "invalid [[$bad.Field.Name]] on create #[[$i]]", method: http.MethodPost, target: "/v1/[[$.Plural]]", body: withMember(createBody(), "[[$bad.Field.Name]]", [[$bad.Value]]), status: 400, code: "invalid_[[$.Name]]_[[$bad.Field.Name]]"},
+		{name: "invalid [[$bad.Field.Name]] on update #[[$i]]", method: http.MethodPatch, target: path, body: [[$.Name]]Body{"version": 1, "[[$bad.Field.Name]]": [[$bad.Value]]}, status: 400, code: "invalid_[[$.Name]]_[[$bad.Field.Name]]"},
+[[- end]]
+		{name: "invalid id", method: http.MethodGet, target: "/v1/[[.Plural]]/not-a-uuid", status: 400, code: "invalid_[[.Name]]_id"},
+		{name: "non-v7 id", method: http.MethodGet, target: "/v1/[[.Plural]]/" + uuidV4, status: 400, code: "invalid_[[.Name]]_id"},
+		{name: "missing", method: http.MethodGet, target: missing, status: 404, code: "[[.Name]]_not_found"},
+		{name: "bad cursor", method: http.MethodGet, target: "/v1/[[.Plural]]?cursor=not-a-cursor", status: 400, code: "invalid_cursor"},
+		{name: "bad limit", method: http.MethodGet, target: "/v1/[[.Plural]]?limit=0", status: 400, code: "invalid_limit"},
+		{name: "limit too large", method: http.MethodGet, target: "/v1/[[.Plural]]?limit=1000", status: 400, code: "invalid_limit"},
+		{name: "update invalid id", method: http.MethodPatch, target: "/v1/[[.Plural]]/nope", body: `{"version":1}`, status: 400, code: "invalid_[[.Name]]_id"},
+		{name: "update missing", method: http.MethodPatch, target: missing, body: withVersion(1), status: 404, code: "[[.Name]]_not_found"},
+		{name: "update without version", method: http.MethodPatch, target: path, body: withVersion(0), status: 400, code: "invalid_version"},
+		{name: "update with string version", method: http.MethodPatch, target: path, body: `{"version":"1"}`, status: 400, code: "invalid_json"},
+		{name: "update without changes", method: http.MethodPatch, target: path, body: `{"version":1}`, status: 400, code: "empty_update"},
+		{name: "update with stale version", method: http.MethodPatch, target: path, body: withVersion(2), status: 409, code: "stale_version"},
+		{name: "update without body", method: http.MethodPatch, target: path, contentType: "application/json", status: 400, code: "invalid_json"},
+		{name: "delete without version", method: http.MethodDelete, target: path, status: 400, code: "invalid_version"},
+		{name: "delete with bad version", method: http.MethodDelete, target: path + "?version=one", status: 400, code: "invalid_version"},
+		{name: "delete with a version beyond int32", method: http.MethodDelete, target: path + "?version=99999999999", status: 409, code: "stale_version"},
+		{name: "delete with an overflowing version", method: http.MethodDelete, target: path + "?version=99999999999999999999", status: 400, code: "invalid_version"},
+		{name: "delete with zero version", method: http.MethodDelete, target: path + "?version=0", status: 400, code: "invalid_version"},
+		{name: "delete invalid id", method: http.MethodDelete, target: "/v1/[[.Plural]]/nope?version=1", status: 400, code: "invalid_[[.Name]]_id"},
+		{name: "delete missing", method: http.MethodDelete, target: missing + "?version=1", status: 404, code: "[[.Name]]_not_found"},
+		{name: "delete with stale version", method: http.MethodDelete, target: path + "?version=2", status: 409, code: "stale_version"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := [[.Name]]SendAs(t, handler, test.method, test.target, test.contentType, test.body)
+			[[.Name]]Expect(t, recorder, test.status)
+			var body web.ErrorBody
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode %s: %v", recorder.Body, err)
+			}
+			if body.Error.Code != test.code || body.Error.Message == "" {
+				t.Fatalf("error = %+v, want code %q", body.Error, test.code)
+			}
+			if body.Error.RequestID == "" || body.Error.RequestID != recorder.Header().Get("X-Request-ID") {
+				t.Fatalf("request_id %q does not match X-Request-ID %q", body.Error.RequestID, recorder.Header().Get("X-Request-ID"))
+			}
+		})
+	}
+}
+
+// Reads need "[[.Plural]]:read" and writes "[[.Plural]]:write": a guard that grants one
+// must not open the other.
+func Test[[.Title]]RoutesRequireTheirPermission(t *testing.T) {
+	t.Parallel()
+	service := new[[.Title]]Service(t)
+	existing, err := service.Create(context.Background(), domain.[[.Title]]Input{
+		[[.SampleInput 1 true]]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/[[.Plural]]/" + existing.ID.String()
+	body := [[.Name]]Body{
+		"version": 1,
+[[- with index .Fields 0]]
+		"[[.Name]]": [[.SampleExpr 2]],
+[[- end]]
+	}
+	create := [[.Name]]Body{
+		[[.SampleBody 1 true]]
+	}
+	reads := []struct{ method, target string }{
+		{http.MethodGet, "/v1/[[.Plural]]"},
+		{http.MethodGet, path},
+	}
+	writes := []struct {
+		method, target string
+		body           any
+	}{
+		{http.MethodPost, "/v1/[[.Plural]]", create},
+		{http.MethodPatch, path, body},
+		{http.MethodDelete, path + "?version=1", nil},
+	}
+
+	t.Run("read only", func(t *testing.T) {
+		t.Parallel()
+		handler := new[[.Title]]HandlerFor(t, service, [[.Name]]Grant("[[.Plural]]:read"))
+		for _, r := range reads {
+			if recorder := [[.Name]]Send(t, handler, r.method, r.target, nil); recorder.Code != http.StatusOK {
+				t.Errorf("%s %s: status %d, want 200", r.method, r.target, recorder.Code)
+			}
+		}
+		for _, w := range writes {
+			if recorder := [[.Name]]Send(t, handler, w.method, w.target, w.body); recorder.Code != http.StatusForbidden {
+				t.Errorf("%s %s: status %d, want 403", w.method, w.target, recorder.Code)
+			}
+		}
+	})
+	t.Run("write only", func(t *testing.T) {
+		t.Parallel()
+		handler := new[[.Title]]HandlerFor(t, new[[.Title]]Service(t), [[.Name]]Grant("[[.Plural]]:write"))
+		for _, r := range reads {
+			if recorder := [[.Name]]Send(t, handler, r.method, r.target, nil); recorder.Code != http.StatusForbidden {
+				t.Errorf("%s %s: status %d, want 403", r.method, r.target, recorder.Code)
+			}
+		}
+		if recorder := [[.Name]]Send(t, handler, writes[0].method, writes[0].target, writes[0].body); recorder.Code != http.StatusCreated {
+			t.Errorf("POST: status %d, want 201; body %s", recorder.Code, recorder.Body)
+		}
+	})
+	t.Run("nothing granted", func(t *testing.T) {
+		t.Parallel()
+		handler := new[[.Title]]HandlerFor(t, service, [[.Name]]Grant())
+		for _, r := range reads {
+			if recorder := [[.Name]]Send(t, handler, r.method, r.target, nil); recorder.Code != http.StatusForbidden {
+				t.Errorf("%s %s: status %d, want 403", r.method, r.target, recorder.Code)
+			}
+		}
+		for _, w := range writes {
+			if recorder := [[.Name]]Send(t, handler, w.method, w.target, w.body); recorder.Code != http.StatusForbidden {
+				t.Errorf("%s %s: status %d, want 403", w.method, w.target, recorder.Code)
+			}
+		}
+	})
+}
+
+func Test[[.Title]]ProtectIsAskedForEveryRoute(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	protect := func(permission string, next http.Handler) (http.Handler, error) {
+		asked = append(asked, permission)
+		return next, nil
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := httpapi.Register[[.PluralTitle]](app, new[[.Title]]Service(t), protect); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(asked)
+	want := []string{"[[.Plural]]:read", "[[.Plural]]:read", "[[.Plural]]:write", "[[.Plural]]:write", "[[.Plural]]:write"}
+	if !slices.Equal(asked, want) {
+		t.Fatalf("protect asked for %v, want %v", asked, want)
+	}
+}
+
+func Test[[.Title]]RegisterRefusesPublicOrIncompleteSetups(t *testing.T) {
+	t.Parallel()
+	service := new[[.Title]]Service(t)
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := httpapi.Register[[.PluralTitle]](app, service, nil); err == nil {
+		t.Error("a nil protect function was accepted: the routes would be public")
+	}
+	if err := httpapi.Register[[.PluralTitle]](app, nil, [[.Name]]AllowAll); err == nil {
+		t.Error("a nil service was accepted")
+	}
+	if err := httpapi.Register[[.PluralTitle]](nil, service, [[.Name]]AllowAll); err == nil {
+		t.Error("a nil router was accepted")
+	}
+	failure := errors.New("guard unavailable")
+	failing := func(string, http.Handler) (http.Handler, error) { return nil, failure }
+	if err := httpapi.Register[[.PluralTitle]](app, service, failing); !errors.Is(err, failure) {
+		t.Errorf("failing protect: err = %v, want it to wrap %v", err, failure)
+	}
+	empty := func(string, http.Handler) (http.Handler, error) { return nil, nil }
+	if err := httpapi.Register[[.PluralTitle]](app, service, empty); err == nil {
+		t.Error("a protect function that returns no handler was accepted")
+	}
+}

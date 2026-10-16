@@ -1,0 +1,595 @@
+package persistence_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"math"
+[[- if and .Postgres .Tenant]]
+	"strings"
+[[- else if .HasString]]
+	"strings"
+[[- end]]
+	"testing"
+	"time"
+[[- if and .Postgres .Tenant]]
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+[[- end]]
+
+	"[[.Module]]/app/adapters/persistence"
+	"[[.Module]]/app/domain"
+	"[[.Module]]/db"
+[[- if and .Postgres .Identity]]
+	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
+[[- end]]
+	"github.com/fabriciobonjorno/forge-go/fault"
+[[- if .Postgres]]
+	"github.com/fabriciobonjorno/forge-go/postgres"
+	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
+[[- else]]
+	"github.com/fabriciobonjorno/forge-go/[[.Database]]/[[.Database]]test"
+	"github.com/fabriciobonjorno/forge-go/sqldb"
+[[- end]]
+[[- if .Tenant]]
+	"github.com/fabriciobonjorno/forge-go/tenancy"
+[[- end]]
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+// These are integration tests. Each one migrates a database of its own, and
+// they run one after another so a shared test server is not asked to create
+// dozens of databases at once.
+[[- if .SQLite]]
+// SQLite needs no server.
+[[- else]]
+// They need a [[.Database]] server (FORGE_TEST_DATABASE_URL or the adapter-specific
+// FORGE_TEST_*_URL variable) and fail instead of skipping when
+// FORGE_TEST_REQUIRE_DATABASE=true.
+[[- end]]
+
+func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [[if .Postgres]]*postgres.DB[[else]]*sqldb.DB[[end]]) {
+	t.Helper()
+[[- if and .Postgres .Identity]]
+	// The migration seeds forge_permissions, so the identity migrations run first.
+	database := postgrestest.NewMigratedSets(t, authpostgres.Migrations(), db.Migrations())
+[[- else]]
+	database := [[.Database]]test.NewMigrated(t, db.Migrations())
+[[- end]]
+	return persistence.New[[.Title]]Repository(database), database
+}
+[[- if .Tenant]]
+
+// new[[.Title]]Tenant returns a fresh tenant and a context carrying it.
+func new[[.Title]]Tenant(t *testing.T) (tenancy.Tenant, context.Context) {
+	t.Helper()
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := tenancy.WithContext(context.Background(), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenant, ctx
+}
+[[- end]]
+
+// new[[.Title]]Entity builds a valid [[.Name]]. With full false the optional fields
+// stay NULL.
+func new[[.Title]]Entity(t *testing.T, full bool) domain.[[.Title]] {
+	t.Helper()
+	input := domain.[[.Title]]Input{
+		[[.SampleInput 1 false]]
+	}
+	if !full {
+		input = domain.[[.Title]]Input{
+			[[.SampleInput 2 false]]
+		}
+	}
+	entity, err := domain.New[[.Title]](uuid.MustNew(), input, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entity
+}
+
+func mustCreate[[.Title]](t *testing.T, ctx context.Context, repo *persistence.[[.Title]]Repository, full bool) domain.[[.Title]] {
+	t.Helper()
+	created, err := repo.Create(ctx, new[[.Title]]Entity(t, full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+func [[.Name]]JSON(t *testing.T, entity domain.[[.Title]]) string {
+	t.Helper()
+	encoded, err := json.Marshal(entity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+[[- if .Tenant]]
+func [[.Name]]IDs(t *testing.T, ctx context.Context, repo *persistence.[[.Title]]Repository) []uuid.UUID {
+	t.Helper()
+	rows, err := repo.List(ctx, uuid.UUID{}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]uuid.UUID, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+	}
+	return ids
+}
+[[- end]]
+
+func Test[[.Title]]RepositoryCreateAndGet(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	for name, full := range map[string]bool{"all fields": true, "required fields only": false} {
+		entity := new[[.Title]]Entity(t, full)
+		created, err := repo.Create(ctx, entity)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if [[.Name]]JSON(t, created) != [[.Name]]JSON(t, entity) {
+			t.Fatalf("%s: created = %s, want %s", name, [[.Name]]JSON(t, created), [[.Name]]JSON(t, entity))
+		}
+		got, err := repo.Get(ctx, entity.ID)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if [[.Name]]JSON(t, got) != [[.Name]]JSON(t, entity) {
+			t.Fatalf("%s: stored = %s, want %s", name, [[.Name]]JSON(t, got), [[.Name]]JSON(t, entity))
+		}
+		if got.CreatedAt.Location() != time.UTC || got.UpdatedAt.Location() != time.UTC {
+			t.Fatalf("%s: timestamps must be UTC, got %v and %v", name, got.CreatedAt.Location(), got.UpdatedAt.Location())
+		}
+	}
+}
+
+func Test[[.Title]]RepositoryGetMissing(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	if _, err := repo.Get(ctx, uuid.MustNew()); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Fatalf("err = %v, want Err[[.Title]]NotFound", err)
+	}
+}
+
+func Test[[.Title]]RepositoryTranslatesDatabaseErrors(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	existing := mustCreate[[.Title]](t, ctx, repo, true)
+	if _, err := repo.Create(ctx, existing); fault.From(err) == nil || fault.From(err).Code != "already_exists" {
+		t.Fatalf("duplicate id: err = %v, want already_exists", err)
+	}
+[[- range .Fields]]
+[[- if .IsString]]
+	// A value that bypassed the domain still meets the database constraint.
+	tooLong := new[[$.Title]]Entity(t, true)
+	tooLong.[[.Title]] = [[.Literal `strings.Repeat("x", 256)`]]
+	if _, err := repo.Create(ctx, tooLong); fault.From(err) == nil || fault.From(err).Code != "constraint_violation" {
+		t.Fatalf("[[.Name]] over 255 characters: err = %v, want constraint_violation", err)
+	}
+[[- break]]
+[[- end]]
+[[- end]]
+}
+
+func Test[[.Title]]RepositoryListWalksEveryRowOnceNewestFirst(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	const total, limit = 23, 5
+	created := make([]domain.[[.Title]], 0, total)
+	for range total {
+		created = append(created, mustCreate[[.Title]](t, ctx, repo, true))
+	}
+
+	seen := make(map[uuid.UUID]bool, total)
+	var order []uuid.UUID
+	var after uuid.UUID
+	for pages := 0; ; pages++ {
+		if pages > total {
+			t.Fatal("pagination does not terminate")
+		}
+		rows, err := repo.List(ctx, after, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, entity := range rows {
+			if seen[entity.ID] {
+				t.Fatalf("[[.Name]] %v returned twice", entity.ID)
+			}
+			seen[entity.ID] = true
+			order = append(order, entity.ID)
+		}
+		after = rows[len(rows)-1].ID
+	}
+
+	if len(order) != total {
+		t.Fatalf("walked %d rows, want %d", len(order), total)
+	}
+	for i, id := range order {
+		if want := created[total-1-i].ID; id != want {
+			t.Fatalf("position %d: got %v, want %v (newest first)", i, id, want)
+		}
+	}
+}
+
+func Test[[.Title]]RepositoryListEmpty(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	rows, err := repo.List(ctx, uuid.UUID{}, 10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rows = %v, err = %v", rows, err)
+	}
+}
+
+func Test[[.Title]]RepositoryUpdate(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	original := mustCreate[[.Title]](t, ctx, repo, true)
+
+	changed, err := original.Apply(domain.[[.Title]]Changes{
+		[[.SampleChanges 2]]
+	}, original.UpdatedAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repo.Update(ctx, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := changed
+	want.Version = original.Version + 1
+	if [[.Name]]JSON(t, updated) != [[.Name]]JSON(t, want) {
+		t.Fatalf("updated = %s, want %s", [[.Name]]JSON(t, updated), [[.Name]]JSON(t, want))
+	}
+	stored, err := repo.Get(ctx, original.ID)
+	if err != nil || [[.Name]]JSON(t, stored) != [[.Name]]JSON(t, want) {
+		t.Fatalf("stored = %v, %v; want %s", stored, err, [[.Name]]JSON(t, want))
+	}
+
+	// changed still carries the old version, which is now stale.
+	if _, err := repo.Update(ctx, changed); !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Fatalf("stale update: err = %v, want ErrStale[[.Title]]Version", err)
+	}
+	missing := new[[.Title]]Entity(t, true)
+	if _, err := repo.Update(ctx, missing); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Fatalf("missing update: err = %v, want Err[[.Title]]NotFound", err)
+	}
+	if after, _ := repo.Get(ctx, original.ID); [[.Name]]JSON(t, after) != [[.Name]]JSON(t, want) {
+		t.Fatalf("a rejected update changed the row: %s", [[.Name]]JSON(t, after))
+	}
+}
+[[- if .HasOptional]]
+
+func Test[[.Title]]RepositoryUpdateClearsOptionalFields(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	original := mustCreate[[.Title]](t, ctx, repo, true)
+	cleared, err := original.Apply(domain.[[.Title]]Changes{
+[[- range .OptionalFields]]
+		Clear[[.Title]]: true,
+[[- end]]
+	}, original.UpdatedAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Update(ctx, cleared); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repo.Get(ctx, original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+[[- range .OptionalFields]]
+	if stored.[[.Title]] != nil {
+		t.Errorf("[[.Name]] = %v after clearing, want NULL", stored.[[.Title]])
+	}
+[[- end]]
+}
+[[- end]]
+
+// Versions are 64-bit: a client-supplied version beyond 32 bits must be a stale
+// version, not a database error.
+func Test[[.Title]]RepositoryHugeVersionsAreStale(t *testing.T) {
+	[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+	[[- else]]
+	ctx := context.Background()
+	[[- end]]
+	repo, _ := new[[.Title]]Repository(t)
+	entity := mustCreate[[.Title]](t, ctx, repo, true)
+	huge := int(int64(math.MaxInt32) + 1)
+
+	if err := repo.Delete(ctx, entity.ID, huge); !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Fatalf("delete with version %d: err = %v, want ErrStale[[.Title]]Version", huge, err)
+	}
+	entity.Version = huge
+	if _, err := repo.Update(ctx, entity); !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Fatalf("update with version %d: err = %v, want ErrStale[[.Title]]Version", huge, err)
+	}
+}
+
+func Test[[.Title]]RepositoryDelete(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	_, ctx := new[[.Title]]Tenant(t)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	entity := mustCreate[[.Title]](t, ctx, repo, true)
+
+	if err := repo.Delete(ctx, entity.ID, entity.Version+1); !errors.Is(err, domain.ErrStale[[.Title]]Version) {
+		t.Fatalf("stale delete: err = %v, want ErrStale[[.Title]]Version", err)
+	}
+	if _, err := repo.Get(ctx, entity.ID); err != nil {
+		t.Fatalf("a stale delete removed the row: %v", err)
+	}
+	if err := repo.Delete(ctx, uuid.MustNew(), 1); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Fatalf("missing delete: err = %v, want Err[[.Title]]NotFound", err)
+	}
+	if err := repo.Delete(ctx, entity.ID, entity.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Get(ctx, entity.ID); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Fatalf("after delete: err = %v, want Err[[.Title]]NotFound", err)
+	}
+}
+[[- if .Tenant]]
+
+// Two tenants hold rows with identical field values. Whatever tenant A asks
+// for, it never reads, changes or removes tenant B's rows, and each tenant's
+// list holds only its own.
+func Test[[.Title]]RepositoryIsolatesTenants(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+	_, ctxA := new[[.Title]]Tenant(t)
+	_, ctxB := new[[.Title]]Tenant(t)
+
+	var rowsA, rowsB []domain.[[.Title]]
+	for range 3 {
+		rowsA = append(rowsA, mustCreate[[.Title]](t, ctxA, repo, true))
+		rowsB = append(rowsB, mustCreate[[.Title]](t, ctxB, repo, true))
+	}
+
+	for _, foreign := range rowsB {
+		if _, err := repo.Get(ctxA, foreign.ID); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+			t.Errorf("tenant A Get(B's row): err = %v, want Err[[.Title]]NotFound", err)
+		}
+		// Not stale: tenant A must not even learn that the row exists.
+		if _, err := repo.Update(ctxA, foreign); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+			t.Errorf("tenant A Update(B's row): err = %v, want Err[[.Title]]NotFound", err)
+		}
+		if err := repo.Delete(ctxA, foreign.ID, foreign.Version); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+			t.Errorf("tenant A Delete(B's row): err = %v, want Err[[.Title]]NotFound", err)
+		}
+	}
+
+	if got, want := [[.Name]]IDs(t, ctxA, repo), idsNewestFirst[[.Title]](rowsA); !sameIDs[[.Title]](got, want) {
+		t.Errorf("tenant A list = %v, want only its own rows %v", got, want)
+	}
+	if got, want := [[.Name]]IDs(t, ctxB, repo), idsNewestFirst[[.Title]](rowsB); !sameIDs[[.Title]](got, want) {
+		t.Errorf("tenant B list = %v, want only its own rows %v", got, want)
+	}
+	for _, own := range rowsB {
+		got, err := repo.Get(ctxB, own.ID)
+		if err != nil || [[$.Name]]JSON(t, got) != [[$.Name]]JSON(t, own) {
+			t.Errorf("tenant B row %v changed after tenant A's attempts: %v, %v", own.ID, got, err)
+		}
+	}
+}
+
+func idsNewestFirst[[.Title]](rows []domain.[[.Title]]) []uuid.UUID {
+	ids := make([]uuid.UUID, len(rows))
+	for i, row := range rows {
+		ids[len(rows)-1-i] = row.ID
+	}
+	return ids
+}
+
+func sameIDs[[.Title]](a, b []uuid.UUID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func Test[[.Title]]RepositoryRequiresTenant(t *testing.T) {
+	repo, _ := new[[.Title]]Repository(t)
+	ctx := context.Background()
+	entity := new[[.Title]]Entity(t, true)
+	checks := map[string]error{}
+	_, checks["Create"] = repo.Create(ctx, entity)
+	_, checks["Get"] = repo.Get(ctx, entity.ID)
+	_, checks["List"] = repo.List(ctx, uuid.UUID{}, 10)
+	_, checks["Update"] = repo.Update(ctx, entity)
+	checks["Delete"] = repo.Delete(ctx, entity.ID, entity.Version)
+	for method, err := range checks {
+		if !errors.Is(err, tenancy.ErrMissing) {
+			t.Errorf("%s without a tenant: err = %v, want tenant_required", method, err)
+		}
+	}
+}
+[[- end]]
+[[- if and .Postgres .Tenant]]
+
+// new[[.Title]]Role creates an unprivileged role (no superuser, no BYPASSRLS)
+// that is dropped with the test, and returns its quoted name.
+func new[[.Title]]Role(t *testing.T, database *postgres.DB) string {
+	t.Helper()
+	role := "forge_rls_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")[:16]
+	quotedRole := pgx.Identifier{role}.Sanitize()
+	if _, err := database.Exec(context.Background(), "CREATE ROLE "+quotedRole+" NOLOGIN"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = database.Exec(context.Background(), "DROP OWNED BY "+quotedRole)
+		_, _ = database.Exec(context.Background(), "DROP ROLE "+quotedRole)
+	})
+	return quotedRole
+}
+
+// The repository's own predicates are not the only protection: the table's
+// row-level security policy confines a statement to the tenant InTenantTx
+// set. The test database user is a superuser, which bypasses RLS, so the
+// checks run as an unprivileged role.
+func Test[[.Title]]RowLevelSecurity(t *testing.T) {
+	repo, database := new[[.Title]]Repository(t)
+	_, ctxA := new[[.Title]]Tenant(t)
+	tenantB, ctxB := new[[.Title]]Tenant(t)
+	own := mustCreate[[.Title]](t, ctxA, repo, true)
+	foreign := mustCreate[[.Title]](t, ctxB, repo, true)
+
+	ctx := context.Background()
+	quotedRole := new[[.Title]]Role(t, database)
+	if _, err := database.Exec(ctx, `GRANT SELECT, INSERT, UPDATE, DELETE ON [[.Q .Plural]] TO `+quotedRole); err != nil {
+		t.Fatal(err)
+	}
+
+	// As tenant A, with no tenant_id predicate anywhere.
+	tenantID := tenantB.ID
+	err := database.InTenantTx(ctxA, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
+			return err
+		}
+		var visible, foreignVisible int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]] WHERE [[.Q "id"]] = $1`, foreign.ID).Scan(&foreignVisible); err != nil {
+			return err
+		}
+		if visible != 1 || foreignVisible != 0 {
+			t.Errorf("tenant A sees %d rows (%d of tenant B's), want exactly its own", visible, foreignVisible)
+		}
+		update, err := tx.Exec(ctx, `UPDATE [[.Q .Plural]] SET [[.Q "version"]] = [[.Q "version"]] + 1 WHERE [[.Q "id"]] = $1`, foreign.ID)
+		if err != nil {
+			return err
+		}
+		remove, err := tx.Exec(ctx, `DELETE FROM [[.Q .Plural]] WHERE [[.Q "id"]] = $1`, foreign.ID)
+		if err != nil {
+			return err
+		}
+		if update.RowsAffected() != 0 || remove.RowsAffected() != 0 {
+			t.Errorf("tenant A changed %d and removed %d of tenant B's rows", update.RowsAffected(), remove.RowsAffected())
+		}
+		if _, err := tx.Exec(ctx, "SAVEPOINT cross_tenant_insert"); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `[[.RawInsert]]`, [[.RawInsertArgs]])
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+			t.Errorf("inserting a row for tenant B as tenant A: err = %v, want a row-level security violation (42501)", err)
+		}
+		_, err = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT cross_tenant_insert")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without InTenantTx nothing is visible: the policy fails closed.
+	err = database.InTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
+			return err
+		}
+		var visible int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
+			return err
+		}
+		if visible != 0 {
+			t.Errorf("a session without a tenant sees %d rows, want none", visible)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, check := range []struct {
+		name string
+		ctx  context.Context
+		row  domain.[[.Title]]
+	}{{"tenant A", ctxA, own}, {"tenant B", ctxB, foreign}} {
+		got, err := repo.Get(check.ctx, check.row.ID)
+		if err != nil || [[.Name]]JSON(t, got) != [[.Name]]JSON(t, check.row) {
+			t.Errorf("%s row after the checks: %v, %v", check.name, got, err)
+		}
+	}
+}
+
+// FORCE ROW LEVEL SECURITY is what subjects the table's owner to the policy
+// (an owner otherwise bypasses it, and migrations run as the owner). Without
+// it, a service that connects as the owner would see every tenant's rows.
+func Test[[.Title]]RowLevelSecurityAppliesToTheOwner(t *testing.T) {
+	repo, database := new[[.Title]]Repository(t)
+	_, ctxA := new[[.Title]]Tenant(t)
+	_, ctxB := new[[.Title]]Tenant(t)
+	mustCreate[[.Title]](t, ctxA, repo, true)
+	mustCreate[[.Title]](t, ctxB, repo, true)
+
+	ctx := context.Background()
+	owner := new[[.Title]]Role(t, database)
+	if _, err := database.Exec(ctx, `ALTER TABLE [[.Q .Plural]] OWNER TO `+owner); err != nil {
+		t.Fatal(err)
+	}
+	err := database.InTenantTx(ctxA, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+owner); err != nil {
+			return err
+		}
+		var visible int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
+			return err
+		}
+		if visible != 1 {
+			t.Errorf("the table owner sees %d rows as tenant A, want 1: is FORCE ROW LEVEL SECURITY missing?", visible)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+[[- end]]

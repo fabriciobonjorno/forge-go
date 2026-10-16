@@ -144,7 +144,12 @@ func databaseURLs(profile *databaseProfile, user, database string, hostPort int)
 // 63-byte identifier limits.
 func databaseIdentifiers(name string) (user, database string) {
 	identifier := strings.ReplaceAll(name, "-", "_")
-	return identifier[:min(len(identifier), 32)], identifier[:min(len(identifier), 51)] + "_development"
+	user = identifier[:min(len(identifier), 32)]
+	// The MySQL and MariaDB images refuse to create a second "root" user.
+	if user == "root" {
+		user = "root_app"
+	}
+	return user, identifier[:min(len(identifier), 51)] + "_development"
 }
 
 // dbHostPort maps name into 20000-29999, so the published database port

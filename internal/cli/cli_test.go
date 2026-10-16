@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/format"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,7 +131,8 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandsSeen[command.Name] = true
 		if command.Name == "generate" {
-			generateDeclaresJob = strings.Contains(command.Usage, "|job>") && containsString(command.Examples, "forge generate job cleanup --dry-run")
+			generateDeclaresJob = strings.Contains(command.Usage, "|job|resource>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
+				containsString(command.Examples, "forge generate resource category name:string --global --plural categories")
 		}
 		commandExitCodesSeen := make(map[int]bool, len(command.ExitCodes))
 		for _, exitCode := range command.ExitCodes {
@@ -380,18 +382,27 @@ func TestGeneratedApplication(t *testing.T) {
 		}
 	})
 
-	// Each database: generated tests pass, and the migration workflow runs
-	// through the application binary against a real server.
+	// Each database: generated tests pass, a generated resource compiles and
+	// its integration tests run against a real server, and the migration
+	// workflow runs through the application binary. The generated resource
+	// code depends only on the adapter, so "mariadb" (the mysql adapter)
+	// exercises the same code against whichever server FORGE_TEST_MYSQL_URL
+	// names, MySQL or MariaDB.
 	for _, database := range []struct {
-		name   string
-		config func(testing.TB) config.Database
+		name    string
+		adapter string // as `forge inspect` reports it
+		config  func(testing.TB) config.Database
 	}{
-		{"postgresql", postgrestest.Config},
-		{"mysql", mysqltest.Config},
-		{"sqlite", sqlitetest.Config},
+		{"postgresql", "postgres", postgrestest.Config},
+		{"mysql", "mysql", mysqltest.Config},
+		{"mariadb", "mysql", mysqltest.Config},
+		{"sqlite", "sqlite", sqlitetest.Config},
 	} {
 		t.Run("database workflow "+database.name, func(t *testing.T) {
 			t.Parallel()
+			// Skips (or fails under FORGE_TEST_REQUIRE_DATABASE) before any
+			// work when the database server is missing.
+			cfg := database.config(t)
 			dir := generate(t, "ledger", "--database", database.name)
 			up, down, err := generateMigration(dir, "create_entries", time.Now())
 			if err != nil {
@@ -400,9 +411,10 @@ func TestGeneratedApplication(t *testing.T) {
 			writeFile(t, up, "CREATE TABLE entries (id CHAR(36) PRIMARY KEY, amount_cents BIGINT NOT NULL);\n")
 			writeFile(t, down, "DROP TABLE entries;\n")
 
+			generateAndWireResources(t, dir, database.adapter)
+
 			// The database settings come from .env.local, as a developer
 			// would configure them.
-			cfg := database.config(t)
 			writeFile(t, filepath.Join(dir, ".env.local"), "FORGE_DATABASE_URL="+cfg.URL.Reveal()+"\n")
 			env, err := environment(dir, os.Environ())
 			if err != nil {
@@ -416,17 +428,148 @@ func TestGeneratedApplication(t *testing.T) {
 				}
 				return output.String()
 			}
-			if output := run("migrate"); !strings.Contains(output, "_create_entries") {
-				t.Fatalf("migrate output: %s", output)
+			output := run("migrate")
+			for _, want := range []string{"_create_entries", "_create_products", "_create_categories"} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("migrate output is missing %s: %s", want, output)
+				}
 			}
 			if output := run("migrate", "status"); !strings.Contains(output, "applied") {
 				t.Fatalf("status output: %s", output)
 			}
-			if output := run("rollback"); !strings.Contains(output, "reverted") {
+			// Every migration reverts cleanly (on PostgreSQL the resource's
+			// permissions and their grants go with it) and applies again.
+			if output := run("rollback", "-steps", "3"); !strings.Contains(output, "reverted") {
 				t.Fatalf("rollback output: %s", output)
+			}
+			if output := run("migrate"); !strings.Contains(output, "_create_products") {
+				t.Fatalf("migrate after rollback: %s", output)
 			}
 		})
 	}
+}
+
+// generateAndWireResources generates a tenant-scoped resource with every
+// field type (required and optional) and a global one, pastes the printed
+// wiring into bootstrap.go, and checks that the application vets, builds and
+// passes its tests, including the database integration tests, which must run
+// rather than skip.
+func generateAndWireResources(t *testing.T, dir, adapter string) {
+	t.Helper()
+	// The database is read from .env.development; keep a developer's own
+	// FORGE_DATABASE_URL out of the decision.
+	var env []string
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "FORGE_DATABASE_URL=") {
+			env = append(env, entry)
+		}
+	}
+	requests := [][]string{
+		{
+			"product", "name:string", "summary:string?", "body:text", "notes:text?", "quantity:int", "limit_count:int?",
+			"active:bool", "featured:bool?", "released_at:time", "retired_at:time?", "owner_id:uuid", "parent_id:uuid?", "--tenant-scoped",
+		},
+		{"category", "name:string", "description:text?", "--global"},
+	}
+	var specs []resourceSpec
+	for _, args := range requests {
+		request, err := parseResourceArgs(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		if err := runGenerateEnv(append([]string{"resource"}, args...), &output, dir, env, time.Now()); err != nil {
+			t.Fatalf("generate resource %s: %v", request.Name, err)
+		}
+		specs = append(specs, resourceSpec{resourceRequest: request, Module: "example.com/acme/ledger", Database: adapter, Identity: adapter == "postgres"})
+		if !strings.Contains(output.String(), "create  "+filepath.Join("app", "domain", request.Name+".go")) {
+			t.Fatalf("generate output: %s", output.String())
+		}
+	}
+	wireResources(t, dir, specs)
+
+	// The generated code imports framework packages the application did not
+	// use before; the vendored framework copy needs them.
+	for _, args := range [][]string{{"mod", "vendor"}, {"vet", "./..."}, {"build", "-o", os.DevNull, "./cmd/ledger"}} {
+		command := exec.Command("go", args...)
+		command.Dir = dir
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("go %v: %v\n%s", args, err, output)
+		}
+	}
+	command := exec.Command("go", "test", "-count=1", "./...")
+	command.Dir = dir
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("go test ./...: %v\n%s", err, output)
+	}
+	// Again, verbosely, for the generated packages only: their tests must run,
+	// not skip. (The scaffold's own bootstrap test skips by design.)
+	command = exec.Command("go", "test", "-count=1", "-v", "./app/domain", "./app/application", "./app/adapters/...")
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go test: %v\n%s", err, output)
+	}
+	for _, want := range []string{
+		"--- PASS: TestProductRepositoryCreateAndGet", "--- PASS: TestProductRepositoryIsolatesTenants",
+		"--- PASS: TestCategoryRepositoryCreateAndGet", "--- PASS: TestProductLifecycle", "--- PASS: TestCategoryServiceCreate",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("generated tests did not run: missing %q\n%s", want, output)
+		}
+	}
+	if adapter == "postgres" && !strings.Contains(string(output), "--- PASS: TestProductRowLevelSecurity") {
+		t.Fatalf("the row-level security test did not run\n%s", output)
+	}
+	if strings.Contains(string(output), "--- SKIP") {
+		t.Fatalf("a generated test was skipped; the database integration tests must run\n%s", output)
+	}
+}
+
+// wireResources applies the wiring `forge generate resource` prints to the
+// generated bootstrap.go, exactly as a developer pasting it would.
+func wireResources(t *testing.T, dir string, specs []resourceSpec) {
+	t.Helper()
+	path := filepath.Join(dir, "app", "bootstrap", "bootstrap.go")
+	source := readFile(t, path)
+	var imports, usage strings.Builder
+	var guard string
+	for i, spec := range specs {
+		parts := buildResourceWiring(spec)
+		if i == 0 {
+			guard = parts.Guard
+		}
+		if parts.PlatformGuard != "" && !strings.Contains(guard, "protectPlatformWrite :=") {
+			guard += "\n" + parts.PlatformGuard
+		}
+		for _, importPath := range parts.Imports {
+			if !strings.Contains(source, `"`+importPath+`"`) && !strings.Contains(imports.String(), `"`+importPath+`"`) {
+				imports.WriteString("\t\"" + importPath + "\"\n")
+			}
+		}
+		usage.WriteString(parts.Usage)
+	}
+	source = strings.Replace(source, "\t\"net/http\"\n", "\t\"net/http\"\n"+imports.String(), 1)
+	anchor := "\treturn app.Handle(\"GET /v1/auth/session\""
+	insertAfter := false
+	if !strings.Contains(source, anchor) {
+		anchor = "\tif err := routes(ctx, app); err != nil {\n\t\treturn err\n\t}\n"
+		insertAfter = true
+	}
+	if !strings.Contains(source, anchor) {
+		t.Fatalf("bootstrap.go has no wiring anchor:\n%s", source)
+	}
+	block := guard + "\n" + usage.String()
+	if insertAfter {
+		source = strings.Replace(source, anchor, anchor+block, 1)
+	} else {
+		source = strings.Replace(source, anchor, block+"\n"+anchor, 1)
+	}
+	formatted, err := format.Source([]byte(source))
+	if err != nil {
+		t.Fatalf("pasted wiring does not parse: %v\n%s", err, source)
+	}
+	writeFile(t, path, string(formatted))
 }
 
 func writeFile(t *testing.T, path, content string) {

@@ -1,0 +1,195 @@
+package persistence
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/fabriciobonjorno/forge-go/postgres"
+[[- if .Tenant]]
+	"github.com/fabriciobonjorno/forge-go/tenancy"
+[[- end]]
+	"github.com/fabriciobonjorno/forge-go/uuid"
+)
+
+const (
+	insert[[.Title]] = [[.SQL.Insert.GoLiteral]]
+
+	select[[.Title]] = [[.SQL.Select.GoLiteral]]
+
+	// UUIDv7 ids sort by creation time, so the primary key index serves
+	// newest-first keyset pagination directly.
+	list[[.PluralTitle]]FirstPage = [[.SQL.ListFirst.GoLiteral]]
+	list[[.PluralTitle]]After     = [[.SQL.ListAfter.GoLiteral]]
+
+	// The version predicate is the optimistic lock: the row is written only
+	// if nobody else wrote it since the caller read it.
+	update[[.Title]] = [[.SQL.Update.GoLiteral]]
+
+	delete[[.Title]] = [[.SQL.Delete.GoLiteral]]
+
+	[[.Name]]Exists = [[.SQL.Exists.GoLiteral]]
+)
+
+// [[.Title]]Repository is the PostgreSQL application.[[.Title]]Repository.
+[[- if .Tenant]]
+//
+// It is tenant-scoped twice over. Every statement binds the tenant from
+// tenancy.Require(ctx) in its predicate or insert, and every call runs in
+// InTenantTx behind the table's FORCE ROW LEVEL SECURITY policy, so even a
+// statement that forgot its tenant predicate could not cross tenants. The
+// database role the application serves with must be neither a superuser nor
+// BYPASSRLS, or the policy is bypassed.
+type [[.Title]]Repository struct {
+	db *postgres.DB
+}
+
+func New[[.Title]]Repository(db *postgres.DB) *[[.Title]]Repository {
+	return &[[.Title]]Repository{db: db}
+}
+
+// run executes fn in a transaction scoped to the context's tenant.
+func (r *[[.Title]]Repository) run(ctx context.Context, fn func(q postgres.DBTX, tenantID uuid.UUID) error) error {
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return err
+	}
+	return r.db.InTenantTx(ctx, func(tx pgx.Tx) error { return fn(tx, tenant.ID) })
+}
+[[- else]]
+// It runs on a pool or inside a transaction, whichever postgres.DBTX it is
+// given.
+type [[.Title]]Repository struct {
+	db postgres.DBTX
+}
+
+func New[[.Title]]Repository(db postgres.DBTX) *[[.Title]]Repository {
+	return &[[.Title]]Repository{db: db}
+}
+
+func (r *[[.Title]]Repository) run(_ context.Context, fn func(q postgres.DBTX) error) error {
+	return fn(r.db)
+}
+[[- end]]
+
+var _ application.[[.Title]]Repository = (*[[.Title]]Repository)(nil)
+
+func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
+		_, err := q.Exec(ctx, insert[[.Title]], [[.SQL.Insert.ArgList]])
+		return err
+	})
+	if err != nil {
+		return domain.[[.Title]]{}, postgres.Translate(err)
+	}
+	return entity, nil
+}
+
+func (r *[[.Title]]Repository) Get(ctx context.Context, id uuid.UUID) (domain.[[.Title]], error) {
+	var entity domain.[[.Title]]
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
+		var err error
+		entity, err = scan[[.Title]](q.QueryRow(ctx, select[[.Title]], [[.SQL.Select.ArgList]]))
+		return err
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	}
+	if err != nil {
+		return domain.[[.Title]]{}, postgres.Translate(err)
+	}
+	return entity, nil
+}
+
+func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error) {
+	var entities []domain.[[.Title]]
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
+		var rows pgx.Rows
+		var err error
+		if after == (uuid.UUID{}) {
+			rows, err = q.Query(ctx, list[[.PluralTitle]]FirstPage, [[.SQL.ListFirst.ArgList]])
+		} else {
+			rows, err = q.Query(ctx, list[[.PluralTitle]]After, [[.SQL.ListAfter.ArgList]])
+		}
+		if err != nil {
+			return err
+		}
+		entities, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.[[.Title]], error) { return scan[[.Title]](row) })
+		return err
+	})
+	if err != nil {
+		return nil, postgres.Translate(err)
+	}
+	return entities, nil
+}
+
+func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
+		tag, err := q.Exec(ctx, update[[.Title]], [[.SQL.Update.ArgList]])
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 1 {
+			return nil
+		}
+		return explainMissed[[.Title]]Write(ctx, q, [[if .Tenant]]tenantID, [[end]]entity.ID)
+	})
+	if err != nil {
+		return domain.[[.Title]]{}, postgres.Translate(err)
+	}
+	// The guarded UPDATE advanced the version by exactly one.
+	entity.Version++
+	return entity, nil
+}
+
+func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version int) error {
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
+		tag, err := q.Exec(ctx, delete[[.Title]], [[.SQL.Delete.ArgList]])
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 1 {
+			return nil
+		}
+		return explainMissed[[.Title]]Write(ctx, q, [[if .Tenant]]tenantID, [[end]]id)
+	})
+	return postgres.Translate(err)
+}
+
+// explainMissed[[.Title]]Write tells a missing [[.Name]] from a version mismatch after
+// a guarded UPDATE or DELETE matched no row.
+func explainMissed[[.Title]]Write(ctx context.Context, q postgres.DBTX, [[if .Tenant]]tenantID uuid.UUID, [[end]]id uuid.UUID) error {
+	var exists bool
+	if err := q.QueryRow(ctx, [[.Name]]Exists, [[.SQL.Exists.ArgList]]).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return domain.Err[[.Title]]NotFound
+	}
+	return domain.ErrStale[[.Title]]Version
+}
+
+func scan[[.Title]](row pgx.Row) (domain.[[.Title]], error) {
+	var entity domain.[[.Title]]
+	if err := row.Scan(&entity.ID,[[range .Fields]] &entity.[[.Title]],[[end]] &entity.Version, &entity.CreatedAt, &entity.UpdatedAt); err != nil {
+		return domain.[[.Title]]{}, err
+	}
+	// pgx returns timestamptz in the local zone; the API speaks UTC.
+	entity.CreatedAt = entity.CreatedAt.UTC()
+	entity.UpdatedAt = entity.UpdatedAt.UTC()
+[[- range .Fields]]
+[[- if .IsTime]]
+[[- if .Optional]]
+	if entity.[[.Title]] != nil {
+		entity.[[.Title]] = new(entity.[[.Title]].UTC())
+	}
+[[- else]]
+	entity.[[.Title]] = entity.[[.Title]].UTC()
+[[- end]]
+[[- end]]
+[[- end]]
+	return entity, nil
+}
