@@ -29,6 +29,11 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	if value, ok := lookup("FORGE_DATABASE_URL"); ok {
 		cfg.Database.URL = NewSecret(value)
 	}
+	if value, ok := lookup("FORGE_MAIL_URL"); ok {
+		cfg.Mail.URL = NewSecret(value)
+	}
+	setString(lookup, "FORGE_MAIL_FROM", &cfg.Mail.From)
+	setString(lookup, "FORGE_MAIL_TLS_CA_FILE", &cfg.Mail.CAFile)
 
 	durations := []struct {
 		key    string
@@ -43,6 +48,7 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 		{"FORGE_DATABASE_MAX_CONN_IDLE_TIME", &cfg.Database.MaxConnIdleTime},
 		{"FORGE_DATABASE_CONNECT_TIMEOUT", &cfg.Database.ConnectTimeout},
 		{"FORGE_DATABASE_STATEMENT_TIMEOUT", &cfg.Database.StatementTimeout},
+		{"FORGE_MAIL_TIMEOUT", &cfg.Mail.Timeout},
 	}
 	for _, item := range durations {
 		if value, ok := lookup(item.key); ok {
@@ -85,6 +91,20 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, invalidValue("FORGE_DATABASE_ALLOW_PLAINTEXT", "true or false")
 		}
 		cfg.Database.AllowPlaintext = parsed
+	}
+	if value, ok := lookup("FORGE_MAIL_ALLOW_PLAINTEXT"); ok {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, invalidValue("FORGE_MAIL_ALLOW_PLAINTEXT", "true or false")
+		}
+		cfg.Mail.AllowPlaintext = parsed
+	}
+	if value, ok := lookup("FORGE_MAIL_PREVIEW"); ok {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, invalidValue("FORGE_MAIL_PREVIEW", "true or false")
+		}
+		cfg.Mail.Preview = parsed
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err

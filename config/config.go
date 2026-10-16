@@ -72,6 +72,7 @@ type Config struct {
 	HTTP        HTTP
 	Auth        Auth
 	Database    Database
+	Mail        Mail
 }
 
 func Default() Config {
@@ -126,5 +127,8 @@ func (c Config) Validate() error {
 	if c.HTTP.MaxHeaderBytes <= 0 || c.HTTP.MaxBodyBytes <= 0 {
 		return errors.New("HTTP size limits must be positive")
 	}
-	return c.Database.validate(c.Environment)
+	if err := c.Database.validate(c.Environment); err != nil {
+		return err
+	}
+	return c.Mail.validate(c.Environment)
 }
