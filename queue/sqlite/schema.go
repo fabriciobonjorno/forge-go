@@ -1,0 +1,43 @@
+package sqlite
+
+import (
+	"context"
+	"embed"
+	"io/fs"
+
+	forge "github.com/fabriciobonjorno/forge-go"
+	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/fabriciobonjorno/forge-go/queue"
+	"github.com/fabriciobonjorno/forge-go/queue/queuecmd"
+	forgesqlite "github.com/fabriciobonjorno/forge-go/sqlite"
+)
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+// Migrations returns the SQLite job queue migrations rooted at ".". Compose
+// them with the application's own through
+// sqlite.CommandsFromSets(app.Migrations(), queuesqlite.Migrations()).
+func Migrations() fs.FS {
+	sub, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
+
+// Commands returns the "jobs" operator command (see queuecmd).
+func Commands() []forge.Command {
+	return queuecmd.Commands(func(ctx context.Context, cfg config.Database) (queue.Admin, func() error, error) {
+		db, err := forgesqlite.Open(ctx, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		store, err := NewStore(db)
+		if err != nil {
+			_ = db.Close()
+			return nil, nil, err
+		}
+		return store, db.Close, nil
+	})
+}
